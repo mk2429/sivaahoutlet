@@ -453,7 +453,7 @@ export async function POST(request) {
 
     const sale = await Sale.create({
       billNumber,
-
+silverRateAtSale: currentRate,
       customerId: customer?._id || null,
 
       customerSnapshot: {

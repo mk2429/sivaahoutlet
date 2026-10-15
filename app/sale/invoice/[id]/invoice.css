@@ -251,3 +251,31 @@
     break-inside: avoid;
   }
 }
+.inv-brand {
+  flex: 0 0 220px;
+  width: 220px;
+  max-width: 220px;
+}
+
+.inv-brand-logo {
+  display: block;
+  width: 220px !important;
+  max-width: 220px !important;
+  height: auto !important;
+  max-height: none !important;
+  object-fit: contain;
+  object-position: left top;
+}
+
+@media print {
+  .inv-brand {
+    flex-basis: 180px;
+    width: 180px;
+    max-width: 180px;
+  }
+
+  .inv-brand-logo {
+    width: 180px !important;
+    max-width: 180px !important;
+  }
+}

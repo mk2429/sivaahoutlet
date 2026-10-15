@@ -1,5 +1,7 @@
+
 "use client";
 
+import { Suspense } from "react";
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import "./invoice.css";
@@ -8,8 +10,9 @@ const money = (value) =>
   new Intl.NumberFormat("en-IN", {
     style: "currency",
     currency: "INR",
-    maximumFractionDigits: 2,
-  }).format(Number(value || 0));
+    maximumFractionDigits: 0,
+    minimumFractionDigits: 0,
+  }).format(Math.round(Number(value) || 0));
 
 const dateText = (value) =>
   value
@@ -20,7 +23,7 @@ const dateText = (value) =>
       })
     : "—";
 
-export default function InvoicePage() {
+function InvoiceContent() {
   const { id } = useParams();
 
   const [sale, setSale] = useState(null);
@@ -58,36 +61,78 @@ export default function InvoicePage() {
     loadInvoice();
   }, [loadInvoice]);
 
-  function sendWhatsApp() {
-    const rawNumber = String(
-      sale?.customerSnapshot?.whatsappNumber || ""
-    ).replace(/\D/g, "");
+ 
+function sendWhatsApp() {
+  const rawNumber = String(
+    sale?.customerSnapshot?.whatsappNumber || ""
+  ).replace(/\D/g, "");
 
-    if (!rawNumber) {
-      alert("This customer does not have a saved WhatsApp number.");
-      return;
-    }
-
-    const phone =
-      rawNumber.length === 10 ? `91${rawNumber}` : rawNumber;
-
-    const message = [
-      "Thank you for shopping with Sivaah!",
-      `Invoice: ${sale.billNumber}`,
-      `Date: ${dateText(sale.createdAt)}`,
-      `Invoice amount: ${money(sale.netAmount)}`,
-      `Amount paid: ${money(sale.amountPaid)}`,
-      `Balance due: ${money(sale.balance)}`,
-      "",
-      "Please contact the outlet if you need a copy of your invoice PDF.",
-    ].join("\n");
-
-    window.open(
-      `https://wa.me/${phone}?text=${encodeURIComponent(message)}`,
-      "_blank",
-      "noopener,noreferrer"
-    );
+  if (!rawNumber) {
+    alert("This customer does not have a saved WhatsApp number.");
+    return;
   }
+
+  const phone =
+    rawNumber.length === 10 ? `91${rawNumber}` : rawNumber;
+
+  const items = sale.items || [];
+  const balance = Math.round(Number(sale.balance) || 0);
+
+  const itemLines = items.map((item, index) => {
+    const weight =
+      item.weight != null
+        ? ` | ${Number(item.weight).toFixed(3)} g`
+        : "";
+
+    return (
+      `${index + 1}. ${item.name || "925 Silver Jewellery"}` +
+      `${item.sku ? `\n   SKU: ${item.sku}` : ""}` +
+      `${weight}` +
+      `\n   Price: ${money(item.listPrice)}` +
+      ` | Discount: ${money(item.discountAmount)}` +
+      ` | Amount: ${money(item.finalPrice)}`
+    );
+  });
+
+  const message = [
+    "✨ *SIVAAH | 925 FINE SILVER JEWELS*",
+    "━━━━━━━━━━━━━━━━━━",
+    "*INVOICE / BILL DETAILS*",
+    "",
+    `*Invoice No.:* ${sale.billNumber || "—"}`,
+    `*Date:* ${dateText(sale.createdAt)}`,
+    `*Customer:* ${sale.customerSnapshot?.name || "Walk-in Customer"}`,
+    "",
+    "🛍️ *JEWELLERY DETAILS*",
+    "━━━━━━━━━━━━━━━━━━",
+    ...itemLines,
+    "",
+    "💰 *BILL SUMMARY*",
+    "━━━━━━━━━━━━━━━━━━",
+    `Gross Amount: ${money(sale.grossAmount)}`,
+    `Discount: − ${money(sale.discountAmount)}`,
+    `*Invoice Total: ${money(sale.netAmount)}*`,
+    "",
+    "💳 *PAYMENT DETAILS*",
+    "━━━━━━━━━━━━━━━━━━",
+    `Payment Method: ${sale.paymentMethod || "—"}`,
+    ...(sale.paymentSummary || []).map(
+      (payment) => `${payment.method}: ${money(payment.amount)}`
+    ),
+    `Amount Paid: ${money(sale.amountPaid)}`,
+    ...(balance > 0 ? [`Balance Due: ${money(balance)}`] : []),
+    "",
+    "Thank you for choosing *Sivaah* ❤️",
+    "Your trust means a lot to us.",
+  ].join("\n");
+
+  window.open(
+    `https://wa.me/${phone}?text=${encodeURIComponent(message)}`,
+    "_blank",
+    "noopener,noreferrer"
+  );
+}
+
 
   if (loading) {
     return <main className="inv-state">Loading invoice…</main>;
@@ -109,6 +154,7 @@ export default function InvoicePage() {
 
   const tax = sale.taxSnapshot || {};
   const items = sale.items || [];
+  const balance = Math.round(Number(sale.balance) || 0);
 
   return (
     <main className="inv-page">
@@ -131,15 +177,22 @@ export default function InvoicePage() {
 
       <article className="inv-paper">
         <header className="inv-header">
-          <div>
-            <div className="inv-logo">SIVAAH</div>
-            <div className="inv-tagline">925 FINE SILVER JEWELS</div>
+          <div className="inv-brand">
+            <img
+              src="/sivaahlogo.jpeg"
+              alt="Sivaah 925 Fine Silver Jewels"
+              className="inv-brand-logo"
+            />
           </div>
 
           <div className="inv-meta">
             <h1>TAX INVOICE</h1>
-            <p><b>Invoice No:</b> {sale.billNumber}</p>
-            <p><b>Date:</b> {dateText(sale.createdAt)}</p>
+            <p>
+              <b>Invoice No:</b> {sale.billNumber}
+            </p>
+            <p>
+              <b>Date:</b> {dateText(sale.createdAt)}
+            </p>
           </div>
         </header>
 
@@ -147,16 +200,29 @@ export default function InvoicePage() {
           <section>
             <h3>SELLER</h3>
             <b>{seller?.legalName || "Shri Narain Jewellers"}</b>
-            <p>{seller?.address || "Seller address not configured"}</p>
+
+            {seller?.address && <p>{seller.address}</p>}
+
             <p>
-              <b>GSTIN:</b>{" "}
-              {seller?.gstin || "09AAWHS3038L1ZB"}
+              <b>GSTIN:</b> {seller?.gstin || "09AAWHS3038L1ZB"}
             </p>
 
-            {seller?.phone && <p><b>Phone:</b> {seller.phone}</p>}
-            {seller?.email && <p><b>Email:</b> {seller.email}</p>}
+            {seller?.phone && (
+              <p>
+                <b>Phone:</b> {seller.phone}
+              </p>
+            )}
+
+            {seller?.email && (
+              <p>
+                <b>Email:</b> {seller.email}
+              </p>
+            )}
+
             {seller?.outletAddress && (
-              <p><b>Outlet:</b> {seller.outletAddress}</p>
+              <p>
+                <b>Outlet:</b> {seller.outletAddress}
+              </p>
             )}
           </section>
 
@@ -190,7 +256,6 @@ export default function InvoicePage() {
                 <th>Description</th>
                 <th>HSN</th>
                 <th>Qty</th>
-                <th>Weight</th>
                 <th>Price</th>
                 <th>Discount</th>
                 <th>Amount</th>
@@ -201,16 +266,24 @@ export default function InvoicePage() {
               {items.map((item, index) => (
                 <tr key={`${item.pieceId || item.sku}-${index}`}>
                   <td>{index + 1}</td>
+
                   <td>
                     <b>{item.name}</b>
-                    <small>{item.sku}</small>
-                    {item.batchId && (
-                      <small>Batch: {item.batchId}</small>
+
+                    {item.sku && <small>{item.sku}</small>}
+
+                    {(item.batchId || item.weight != null) && (
+                      <small className="inv-item-meta">
+                        {item.batchId && `Batch: ${item.batchId}`}
+                        {item.batchId && item.weight != null && " · "}
+                        {item.weight != null &&
+                          `Wt: ${Number(item.weight).toFixed(3)} g`}
+                      </small>
                     )}
                   </td>
+
                   <td>{item.hsnCode || "7113"}</td>
                   <td>1</td>
-                  <td>{Number(item.weight || 0).toFixed(3)} g</td>
                   <td>{money(item.listPrice)}</td>
                   <td>{money(item.discountAmount)}</td>
                   <td>{money(item.finalPrice)}</td>
@@ -223,7 +296,10 @@ export default function InvoicePage() {
         <div className="inv-lower">
           <section>
             <h3>PAYMENT DETAILS</h3>
-            <p><b>Method:</b> {sale.paymentMethod || "—"}</p>
+
+            <p>
+              <b>Method:</b> {sale.paymentMethod || "—"}
+            </p>
 
             {(sale.paymentSummary || []).map((payment, index) => (
               <p key={index}>
@@ -283,10 +359,12 @@ export default function InvoicePage() {
               <b>{money(sale.amountPaid)}</b>
             </div>
 
-            <div className="inv-due">
-              <span>Balance due</span>
-              <b>{money(sale.balance)}</b>
-            </div>
+            {balance > 0 && (
+              <div className="inv-due">
+                <span>Balance due</span>
+                <b>{money(balance)}</b>
+              </div>
+            )}
           </section>
         </div>
 
@@ -296,5 +374,13 @@ export default function InvoicePage() {
         </footer>
       </article>
     </main>
+  );
+}
+
+export default function InvoicePage() {
+  return (
+    <Suspense fallback={<main>Loading invoice...</main>}>
+      <InvoiceContent />
+    </Suspense>
   );
 }

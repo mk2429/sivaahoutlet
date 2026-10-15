@@ -40,7 +40,13 @@ const SaleItemSchema = new mongoose.Schema(
 
 const SaleSchema = new mongoose.Schema(
   {
+
     billNumber: { type: String, required: true, unique: true },
+      silverRateAtSale: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
     customerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Customer",

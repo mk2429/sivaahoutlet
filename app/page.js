@@ -82,73 +82,95 @@ export default function OutletDashboard() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [selectedProduct]);
 
-  async function loadCollections() {
-    setLoadingCollections(true);
-    setError("");
+ async function loadCollections() {
+  // Open the tab immediately so the browser doesn't block it.
+  const whatsappWindow = window.open("about:blank", "_blank");
 
-    try {
-      const data = await fetchJson("/api/outlet/daily-collections");
+  setLoadingCollections(true);
+  setError("");
 
-      if (!data.success || !data.report) {
-        throw new Error("The collections report is unavailable.");
-      }
+  try {
+    const data = await fetchJson("/api/outlet/daily-collections");
 
-      setCollections(data.report);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoadingCollections(false);
+    if (!data.success || !data.report) {
+      throw new Error("The collections report is unavailable.");
     }
+
+    const report = data.report;
+    setCollections(report);
+
+    if (!whatsappWindow) {
+      throw new Error(
+        "WhatsApp tab was blocked. Allow pop-ups and try again."
+      );
+    }
+
+    const message = buildWhatsAppMessage(report);
+
+    whatsappWindow.location.href =
+      `https://wa.me/?text=${encodeURIComponent(message)}`;
+
+  } catch (err) {
+    if (whatsappWindow && !whatsappWindow.closed) {
+      whatsappWindow.close();
+    }
+
+    setError(err.message);
+  } finally {
+    setLoadingCollections(false);
   }
+}
+function buildWhatsAppMessage(report) {
+  const lines = [
+    "SIVAAH | DAILY COLLECTION REPORT",
+    `Date: ${report.date}`,
+    "",
+    "SALES SUMMARY",
+    `Bills: ${report.billCount}`,
+    `Gross sales: ${money(report.grossSales)}`,
+    `Discounts: ${money(report.discounts)}`,
+    `Net sales: ${money(report.netSales)}`,
+    "",
+    "PAYMENT COLLECTIONS",
+    `Cash received: ${money(report.cash)}`,
+    `UPI received: ${money(report.upi)}`,
+    `Card: ${money(report.card)}`,
+    `Bank transfer: ${money(report.bankTransfer)}`,
+    `Other: ${money(report.otherPayments)}`,
+    `Total collected: ${money(report.totalCollected)}`,
+    `Outstanding: ${money(report.outstanding)}`,
+    "",
+    "PRODUCTS SOLD",
+    ...(report.bills || []).map((bill) =>
+      `${bill.billNumber} | ${bill.time} | ${bill.customerName} | ${bill.paymentSummary} | Bill: ${money(bill.netAmount)} | Paid: ${money(bill.amountPaid)}`
+    ),
+    "",
+    "EXPENSES",
+    `Total expenses: ${money(report.expenses)}`,
+    `Net cash movement: ${money(report.netCashMovement)}`,
+    "",
+    "Generated from Sivaah Outlet System",
+  ];
 
-  function sendWhatsAppReport() {
-    if (!collections) return;
+  return lines.join("\n");
+}
+  
+function sendWhatsAppReport() {
+  if (!collections) return;
 
-    const report = collections;
-    const lines = [
-      "SIVAAH | DAILY COLLECTION REPORT",
-      `Date: ${report.date}`,
-      "",
-      "SALES SUMMARY",
-      `Bills: ${report.billCount}`,
-      `Gross sales: ${money(report.grossSales)}`,
-      `Discounts: ${money(report.discounts)}`,
-      `Net sales: ${money(report.netSales)}`,
-      "",
-      "PAYMENT COLLECTIONS",
-      `Cash: ${money(report.cash)}`,
-      `UPI: ${money(report.upi)}`,
-      `Card: ${money(report.card)}`,
-      `Bank transfer: ${money(report.bankTransfer)}`,
-      `Other: ${money(report.otherPayments)}`,
-      `Total collected: ${money(report.totalCollected)}`,
-      `Outstanding balance: ${money(report.outstanding)}`,
-      "",
-      "SALESPERSON-WISE COLLECTIONS",
-      ...(report.salespersons || []).map(
-        (person) =>
-          `${person.name}: ${money(person.totalCollected)} | Bills: ${person.billCount}`
-      ),
-      "",
-      "BILL DETAILS",
-      ...(report.bills || []).map(
-        (bill) =>
-          `${bill.billNumber} | ${bill.time} | ${bill.customerName} | ${bill.salespersonName} | Bill: ${money(bill.netAmount)} | Paid: ${money(bill.amountPaid)} | Due: ${money(bill.balance)} | ${bill.paymentSummary}`
-      ),
-      "",
-      "EXPENSES",
-      `Total expenses: ${money(report.expenses)}`,
-      `Net cash movement: ${money(report.netCashMovement)}`,
-      "",
-      "Generated from Sivaah Outlet System",
-    ];
+  const message = buildWhatsAppMessage(collections);
 
-    window.open(
-      `https://wa.me/?text=${encodeURIComponent(lines.join("\n"))}`,
-      "_blank",
-      "noopener,noreferrer"
-    );
-  }
+  // Open the report first so you can copy it.
+  const whatsappUrl =
+    `https://wa.me/?text=${encodeURIComponent(message)}`;
+
+  window.open(
+    whatsappUrl,
+    "_blank",
+    "noopener,noreferrer"
+  );
+}
+
 
   const categories = useMemo(
     () => ["All", ...new Set(products.map((p) => p.category || "Uncategorised"))],

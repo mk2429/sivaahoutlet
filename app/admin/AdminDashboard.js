@@ -5,7 +5,11 @@ import { useState, useEffect } from "react";
 import ProductsInventory from "./ProductsInventory";
 import SilverRateSettings from "./SilverRateSettings";
 import PricingInventory from "./PricingInventory";
+import Reports from "./Reports";
+// import SalesBills from "./sales-bills/SalesBills";
+import SalesBills from "./SalesBill";
 import Discounts from "./Discount";
+import Expenses from "./Expenses";
 const sections = [
     ["Sales & Bills", "All invoices, salesperson-wise sales and returns."],
     ["Salespersons", "Add names, mobile numbers and addresses; view their bills."],
@@ -13,17 +17,47 @@ const sections = [
     ["Pricing Inventory", "View piece-wise costs, selling prices and margins."],
     ["Silver Rate", "Set today's silver rate per gram for product pricing."],
     ["Discounts", "Create and manage percentage and flat discounts."],
-    ["Cash & Payments", "Cash, UPI and daily reconciliation."],
     ["Expenses", "Record and review outlet expenses."],
     ["Reports", "Sales, margins and stock valuation."],
-    ["Settings", "Outlet and invoice configuration."],
+    
 
 ];
 
 export default function AdminDashboard() {
     const [activePage, setActivePage] = useState("Dashboard");
     const [silverRate, setSilverRate] = useState(null);
+const [dashboardStats, setDashboardStats] = useState(null);
+const [dashboardLoading, setDashboardLoading] = useState(true);
 
+useEffect(() => {
+  let cancelled = false;
+
+  async function loadDashboardStats() {
+    try {
+      const response = await fetch("/api/admin/dashboard", {
+        cache: "no-store",
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || "Failed to load dashboard");
+      }
+
+      if (!cancelled) setDashboardStats(result.metrics);
+    } catch (error) {
+      console.error("Failed to load dashboard stats:", error);
+    } finally {
+      if (!cancelled) setDashboardLoading(false);
+    }
+  }
+
+  loadDashboardStats();
+
+  return () => {
+    cancelled = true;
+  };
+}, []);
     useEffect(() => {
         async function loadSilverRate() {
             try {
@@ -138,20 +172,64 @@ export default function AdminDashboard() {
                                 </div>
                             </div>
 
-                            <div className="stats-grid">
-                                {[
-                                    ["Total Sales", "₹—"],
-                                    ["Cash & UPI", "₹—"],
-                                    ["Inventory Items", "—"],
-                                    ["Expenses", "₹—"],
-                                ].map(([label, value]) => (
-                                    <article className="stat-card" key={label}>
-                                        <span className="stat-label">{label}</span>
-                                        <h3>{value}</h3>
-                                        <p>Awaiting live data</p>
-                                    </article>
-                                ))}
-                            </div>
+                           
+<div className="stats-grid">
+  <article className="stat-card">
+    <span className="stat-label">TODAY'S SALES</span>
+    <h3>
+      {dashboardStats
+        ? `₹${Number(dashboardStats.todaySales).toLocaleString("en-IN")}`
+        : dashboardLoading ? "Loading..." : "—"}
+    </h3>
+    <p>Completed bills · Today</p>
+  </article>
+
+  <article className="stat-card">
+    <span className="stat-label">CASH & UPI RECEIVED</span>
+    <h3>
+      {dashboardStats
+        ? `₹${Number(dashboardStats.totalReceived).toLocaleString("en-IN")}`
+        : dashboardLoading ? "Loading..." : "—"}
+    </h3>
+    <p>
+      Cash: ₹{Number(dashboardStats?.cashReceived || 0).toLocaleString("en-IN")}
+      {" · "}
+      UPI: ₹{Number(dashboardStats?.upiReceived || 0).toLocaleString("en-IN")}
+    </p>
+  </article>
+
+  <article className="stat-card">
+    <span className="stat-label">PIECES AT OUTLET</span>
+    <h3>
+      {dashboardStats
+        ? Number(dashboardStats.outletPieces).toLocaleString("en-IN")
+        : dashboardLoading ? "Loading..." : "—"}
+    </h3>
+    <p>Currently in stock</p>
+  </article>
+
+  <article className="stat-card">
+    <span className="stat-label">TODAY'S PROFIT · INSTANT CP</span>
+    <h3 style={{
+      color: dashboardStats?.instantProfit < 0 ? "#dc2626" : undefined
+    }}>
+      {dashboardStats
+        ? `₹${Number(dashboardStats.instantProfit).toLocaleString("en-IN", {
+            maximumFractionDigits: 2
+          })}`
+        : dashboardLoading ? "Loading..." : "—"}
+    </h3>
+    <p>
+      {dashboardStats
+        ? `${dashboardStats.soldPiecesCount} pieces sold`
+        : "Today's sold pieces"}
+      {dashboardStats?.itemsWithUnknownCost > 0
+        ? ` · ${dashboardStats.itemsWithUnknownCost} cost unknown`
+        : ""}
+    </p>
+  </article>
+</div>
+
                             <div
                                 className="stat-card"
                                 style={{
@@ -210,42 +288,52 @@ export default function AdminDashboard() {
                         <PricingInventory />
                     ) : activePage === "Discounts" ? (
                         <Discounts />
-                    ) : (
-                        <section className="module-page">
-                            <div className="eyebrow">ADMINISTRATION</div>
-                            <h2>{activePage}</h2>
-                            <p className="page-description">
-                                {sections.find(([name]) => name === activePage)?.[1]}
-                            </p>
+                    ) :
+                        activePage === "Sales & Bills" ? (
+                            <SalesBills />
+                        ) : 
+                        activePage === "Reports" ?( <Reports />
 
-                            <div className="module-card">
-                                <h3>{activePage}</h3>
-                                <p>
-                                    This module is a placeholder and is not yet connected
-                                    to the database.
+                        ): 
+                        activePage === "Expenses" ?( <Expenses />
+
+                        )
+                        :(
+                            <section className="module-page">
+                                <div className="eyebrow">ADMINISTRATION</div>
+                                <h2>{activePage}</h2>
+                                <p className="page-description">
+                                    {sections.find(([name]) => name === activePage)?.[1]}
                                 </p>
 
-                                {activePage === "Salespersons" && (
-                                    <button
-                                        className="primary-button"
-                                        onClick={() => {
-                                            window.location.href = "/admin/salespersons";
-                                        }}
-                                    >
-                                        Manage Salespersons →
-                                    </button>
-                                )}
+                                <div className="module-card">
+                                    <h3>{activePage}</h3>
+                                    <p>
+                                        This module is a placeholder and is not yet connected
+                                        to the database.
+                                    </p>
 
-                                <button
-                                    className="secondary-button"
-                                    style={{ marginTop: 12 }}
-                                    onClick={() => setActivePage("Dashboard")}
-                                >
-                                    ← Back to Dashboard
-                                </button>
-                            </div>
-                        </section>
-                    )}
+                                    {activePage === "Salespersons" && (
+                                        <button
+                                            className="primary-button"
+                                            onClick={() => {
+                                                window.location.href = "/admin/salespersons";
+                                            }}
+                                        >
+                                            Manage Salespersons →
+                                        </button>
+                                    )}
+
+                                    <button
+                                        className="secondary-button"
+                                        style={{ marginTop: 12 }}
+                                        onClick={() => setActivePage("Dashboard")}
+                                    >
+                                        ← Back to Dashboard
+                                    </button>
+                                </div>
+                            </section>
+                        )}
                 </div>
             </section>
         </main>
