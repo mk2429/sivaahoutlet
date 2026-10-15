@@ -1,0 +1,49 @@
+.discount-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.discount-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  min-width: 0;
+}
+
+.discount-field input,
+.discount-field select {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 44px;
+  border: 1px solid #ded8ce;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fff;
+  color: #222;
+  font: inherit;
+  font-weight: 400;
+}
+
+.discount-field input:focus,
+.discount-field select:focus {
+  outline: 2px solid #b08d57;
+  outline-offset: 1px;
+}
+
+.discount-wide {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 640px) {
+  .discount-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .discount-wide {
+    grid-column: auto;
+  }
+}

@@ -1,69 +1,515 @@
-import Image from "next/image";
 
-export default function Home() {
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import "./outlet-dashboard.css";
+import CustomerManager from "./CustomerManager";
+const money = (value) =>
+  Number(value || 0).toLocaleString("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 0,
+  });
+
+async function fetchJson(url) {
+  const response = await fetch(url, { cache: "no-store" });
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.message || `Request failed (${response.status})`);
+  }
+
+  return data;
+}
+
+export default function OutletDashboard() {
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("All");
+  const [sort, setSort] = useState("name");
+  const [products, setProducts] = useState([]);
+  const [collections, setCollections] = useState(null);
+  const [selectedProduct, setSelectedProduct] = useState(null);
+  const [loadingProducts, setLoadingProducts] = useState(true);
+  const [loadingCollections, setLoadingCollections] = useState(false);
+  const [error, setError] = useState("");
+  const [today, setToday] = useState("");
+
+  useEffect(() => {
+    setToday(
+      new Date().toLocaleDateString("en-IN", {
+        weekday: "short",
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      })
+    );
+
+    let active = true;
+
+    async function loadProducts() {
+      try {
+        setLoadingProducts(true);
+        setError("");
+
+        const data = await fetchJson("/api/outlet/products");
+        if (!data.success) {
+          throw new Error(data.message || "Inventory unavailable");
+        }
+
+        if (active) setProducts(data.products || []);
+      } catch (err) {
+        if (active) setError(err.message);
+      } finally {
+        if (active) setLoadingProducts(false);
+      }
+    }
+
+    loadProducts();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selectedProduct) return;
+
+    function handleKeyDown(event) {
+      if (event.key === "Escape") setSelectedProduct(null);
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedProduct]);
+
+  async function loadCollections() {
+    setLoadingCollections(true);
+    setError("");
+
+    try {
+      const data = await fetchJson("/api/outlet/daily-collections");
+
+      if (!data.success || !data.report) {
+        throw new Error("The collections report is unavailable.");
+      }
+
+      setCollections(data.report);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoadingCollections(false);
+    }
+  }
+
+  function sendWhatsAppReport() {
+    if (!collections) return;
+
+    const report = collections;
+    const lines = [
+      "SIVAAH | DAILY COLLECTION REPORT",
+      `Date: ${report.date}`,
+      "",
+      "SALES SUMMARY",
+      `Bills: ${report.billCount}`,
+      `Gross sales: ${money(report.grossSales)}`,
+      `Discounts: ${money(report.discounts)}`,
+      `Net sales: ${money(report.netSales)}`,
+      "",
+      "PAYMENT COLLECTIONS",
+      `Cash: ${money(report.cash)}`,
+      `UPI: ${money(report.upi)}`,
+      `Card: ${money(report.card)}`,
+      `Bank transfer: ${money(report.bankTransfer)}`,
+      `Other: ${money(report.otherPayments)}`,
+      `Total collected: ${money(report.totalCollected)}`,
+      `Outstanding balance: ${money(report.outstanding)}`,
+      "",
+      "SALESPERSON-WISE COLLECTIONS",
+      ...(report.salespersons || []).map(
+        (person) =>
+          `${person.name}: ${money(person.totalCollected)} | Bills: ${person.billCount}`
+      ),
+      "",
+      "BILL DETAILS",
+      ...(report.bills || []).map(
+        (bill) =>
+          `${bill.billNumber} | ${bill.time} | ${bill.customerName} | ${bill.salespersonName} | Bill: ${money(bill.netAmount)} | Paid: ${money(bill.amountPaid)} | Due: ${money(bill.balance)} | ${bill.paymentSummary}`
+      ),
+      "",
+      "EXPENSES",
+      `Total expenses: ${money(report.expenses)}`,
+      `Net cash movement: ${money(report.netCashMovement)}`,
+      "",
+      "Generated from Sivaah Outlet System",
+    ];
+
+    window.open(
+      `https://wa.me/?text=${encodeURIComponent(lines.join("\n"))}`,
+      "_blank",
+      "noopener,noreferrer"
+    );
+  }
+
+  const categories = useMemo(
+    () => ["All", ...new Set(products.map((p) => p.category || "Uncategorised"))],
+    [products]
+  );
+
+  const filteredProducts = useMemo(() => {
+    const query = search.trim().toLowerCase();
+
+    const result = products.filter((product) => {
+      const searchable = [
+        product.name,
+        product.sku,
+        product.barcode,
+        product.batchId,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      const matchesSearch = searchable.includes(query);
+      const matchesCategory =
+        category === "All" ||
+        (product.category || "Uncategorised") === category;
+
+      return matchesSearch && matchesCategory;
+    });
+
+    result.sort((a, b) => {
+      if (sort === "priceLow") return a.sp - b.sp;
+      if (sort === "priceHigh") return b.sp - a.sp;
+      if (sort === "weightLow") return a.weight - b.weight;
+      if (sort === "weightHigh") return b.weight - a.weight;
+      return a.name.localeCompare(b.name);
+    });
+
+    return result;
+  }, [products, search, category, sort]);
+
+  const selectedOffers = selectedProduct?.discountOffers || [];
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.js
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <main className="outlet-page">
+      <header className="outlet-header">
+        
+        <nav className="header-actions">
+          <CustomerManager />
+
+          <a className="header-sale" href="/sale">
+            <span>＋</span> Add Sale
+          </a>
+
+          <button
+            className="header-collection"
+            onClick={loadCollections}
+            disabled={loadingCollections}
+          >
+            <span>₹</span>
+            {loadingCollections ? "Loading…" : "Daily Collection"}
+          </button>
+        </nav>
+      </header>
+
+      <section className="inventory-section">
+        <div className="inventory-heading">
+          <div>
+            <p className="eyebrow">OUTLET INVENTORY</p>
+            <h1>Find Jewellery</h1>
+            <p>Search by name, SKU, barcode or batch ID.</p>
+          </div>
+
+          <span className="inventory-count">
+            {loadingProducts ? "Loading…" : `${filteredProducts.length} pieces`}
+          </span>
+        </div>
+
+        <label className="product-search">
+          <span aria-hidden="true">⌕</span>
+          <input
+            type="search"
+            placeholder="Search jewellery, SKU or batch ID…"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            autoComplete="off"
+          />
+          {search && (
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              aria-label="Clear search"
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+              ×
+            </button>
+          )}
+        </label>
+
+        <div className="inventory-controls">
+          <label>
+            <span>Category</span>
+            <select
+              value={category}
+              onChange={(event) => setCategory(event.target.value)}
             >
-              Learning
-            </a>{" "}
-            center.
+              {categories.map((item) => (
+                <option key={item} value={item}>{item}</option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            <span>Sort by</span>
+            <select
+              value={sort}
+              onChange={(event) => setSort(event.target.value)}
+            >
+              <option value="name">Name: A–Z</option>
+              <option value="priceLow">Price: Low to high</option>
+              <option value="priceHigh">Price: High to low</option>
+              <option value="weightLow">Weight: Low to high</option>
+              <option value="weightHigh">Weight: High to low</option>
+            </select>
+          </label>
+        </div>
+
+        {error && <div className="outlet-error" role="alert">{error}</div>}
+
+        {loadingProducts ? (
+          <div className="inventory-message">Loading available jewellery…</div>
+        ) : filteredProducts.length === 0 ? (
+          <div className="inventory-message">
+            <strong>
+              {error ? "Inventory could not be loaded" : "No matching pieces found"}
+            </strong>
+            <p>
+              {error
+                ? "Check the error above and try again."
+                : "Try another search term or category."}
+            </p>
+          </div>
+        ) : (
+          <div className="product-list">
+            {filteredProducts.map((product) => (
+              <article className="product-row" key={product.pieceId}>
+                <div className="row-photo">
+                  {product.image ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={product.image} alt={product.name} loading="lazy" />
+                  ) : (
+                    <div className="row-photo-placeholder">925</div>
+                  )}
+                </div>
+
+                <div className="row-details">
+                  <strong className="row-product-name">
+                    {product.name || "Silver Jewellery"}
+                  </strong>
+                  <span>SKU: {product.sku || "—"}</span>
+                  <span>Batch: {product.batchId || "—"}</span>
+                </div>
+
+                <div className="row-weight">
+                  <span>Weight</span>
+                  <strong>{product.weight} g</strong>
+                </div>
+
+                <div className="row-price">
+                  <span>Price</span>
+                  <strong>{money(product.sp)}</strong>
+                  {product.discountOffers?.length > 0 && (
+                    <small>{product.discountOffers.length} offer(s)</small>
+                  )}
+                </div>
+
+                <div className="row-actions">
+                  <button
+                    type="button"
+                    className="rates-button "
+                    onClick={() => setSelectedProduct(product)}
+                  >
+                    Check Rates
+                    <span>&amp; Discounts</span>
+                  </button>
+
+                  {/* <a
+                    className="product-select"
+                    href={`/sale?sku=${encodeURIComponent(product.sku || "")}&pieceId=${encodeURIComponent(product.pieceId || "")}`}
+                  >
+                    Select
+                    <span>→</span>
+                  </a> */}
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {selectedProduct && (
+        <div
+          className="rates-overlay"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setSelectedProduct(null);
+            }
+          }}
+        >
+          <section
+            className="rates-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="rates-modal-title"
+          >
+            <header className="rates-modal-header">
+              <div>
+                <p className="eyebrow">PRICE & OFFERS</p>
+                <h2 id="rates-modal-title">Rates & Discounts</h2>
+                <p>{selectedProduct.name}</p>
+                <small>
+                  SKU: {selectedProduct.sku || "—"} · Batch: {selectedProduct.batchId || "—"}
+                </small>
+              </div>
+
+              <button
+                className="modal-close"
+                type="button"
+                onClick={() => setSelectedProduct(null)}
+                aria-label="Close rates popup"
+              >
+                ×
+              </button>
+            </header>
+
+            <div className="modal-standard-price">
+              <span>Standard selling price</span>
+              <strong>{money(selectedProduct.sp)}</strong>
+              <small>Weight: {selectedProduct.weight} g</small>
+            </div>
+
+            <div className="rates-modal-body">
+              <h3>Available offers</h3>
+
+              {selectedOffers.length === 0 ? (
+                <div className="no-offers">
+                  <strong>No matching offers right now</strong>
+                  <p>The standard selling price applies to this piece.</p>
+                </div>
+              ) : (
+                selectedOffers.map((offer) => (
+                  <article className="offer-card" key={offer.id}>
+                    <div className="offer-card-heading">
+                      <div>
+                        <strong>{offer.name}</strong>
+                        <span>
+                          {offer.type === "percentage"
+                            ? `${offer.value}% off`
+                            : `${money(offer.value)} off`}
+                        </span>
+                      </div>
+                      <div className="offer-card-price">
+                        <strong>{money(offer.price)}</strong>
+                        <small>Indicative price</small>
+                      </div>
+                    </div>
+
+                    <div className="offer-savings">
+                      Potential saving: {money(offer.amountOff)}
+                    </div>
+
+                    <div className="offer-criteria">
+                      <strong>Offer criteria</strong>
+                      <ul>
+                        {(offer.criteria || []).map((criterion, index) => (
+                          <li key={`${offer.id}-${index}`}>{criterion}</li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    {offer.requiresBillCheck && (
+                      <p className="offer-condition-note">
+                        Final eligibility depends on the complete bill and the offer criteria.
+                      </p>
+                    )}
+                  </article>
+                ))
+              )}
+            </div>
+
+            <footer className="rates-modal-footer">
+              <button
+                type="button"
+                className="modal-back-button"
+                onClick={() => setSelectedProduct(null)}
+              >
+                ← Back to inventory
+              </button>
+              <button
+                type="button"
+                className="modal-done-button"
+                onClick={() => setSelectedProduct(null)}
+              >
+                Close
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
+
+      {collections && (
+        <section className="collection-panel">
+          <div className="collection-heading">
+            <div>
+              <p className="eyebrow">END-OF-DAY REPORT</p>
+              <h2>Today&apos;s Collections</h2>
+              <p>Report date: {collections.date}</p>
+            </div>
+            <button className="whatsapp-button" onClick={sendWhatsAppReport}>
+              ↗ Send on WhatsApp
+            </button>
+          </div>
+
+          <div className="collection-stats">
+            {[
+              ["Net sales", collections.netSales],
+              ["Total collected", collections.totalCollected],
+              ["Outstanding", collections.outstanding],
+              ["Expenses", collections.expenses],
+            ].map(([label, value]) => (
+              <div key={label}>
+                <span>{label}</span>
+                <strong>{money(value)}</strong>
+              </div>
+            ))}
+          </div>
+
+          <div className="payment-breakdown">
+            <h3>Payment breakdown</h3>
+            {[
+              ["Cash", collections.cash],
+              ["UPI", collections.upi],
+              ["Card", collections.card],
+              ["Bank transfer", collections.bankTransfer],
+              ["Other", collections.otherPayments],
+            ].map(([label, value]) => (
+              <div className="payment-row" key={label}>
+                <span>{label}</span>
+                <strong>{money(value)}</strong>
+              </div>
+            ))}
+          </div>
+
+          <p className="report-note">
+            WhatsApp opens with the report prefilled. Review it and press Send.
           </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+        </section>
+      )}
+
+      <footer className="outlet-footer">
+        <span>SIVAAH · 925 Sterling Silver</span>
+        <span>{today}</span>
+      </footer>
+    </main>
   );
 }
