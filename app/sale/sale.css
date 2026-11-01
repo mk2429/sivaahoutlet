@@ -606,3 +606,196 @@
     font-size: 13px;
   }
 }
+.sale-customer-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+}
+
+.sale-customer-row .sale-customer-picker {
+    flex: 1;
+    min-width: 0;
+}
+
+.sale-add-customer {
+    flex-shrink: 0;
+    height: 46px;
+    padding: 0 14px;
+    border: 1px solid #7b4b50;
+    border-radius: 9px;
+    background: #7b4b50;
+    color: white;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.sale-add-customer span {
+    font-size: 18px;
+    margin-right: 3px;
+}
+
+.sale-customer-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    background: rgba(20, 15, 15, 0.58);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+
+.sale-customer-modal {
+    width: 100%;
+    max-width: 480px;
+    max-height: 90vh;
+    overflow-y: auto;
+    background: #fff;
+    border-radius: 16px;
+    padding: 24px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+}
+
+.sale-customer-modal-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 22px;
+}
+
+.sale-customer-modal-header span {
+    color: #8b6265;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+}
+
+.sale-customer-modal-header h2 {
+    margin: 5px 0;
+    font-size: 23px;
+    color: #302527;
+}
+
+.sale-customer-modal-header p {
+    margin: 0;
+    color: #777;
+    font-size: 13px;
+}
+
+.sale-customer-modal-header > button {
+    border: 0;
+    background: transparent;
+    font-size: 27px;
+    cursor: pointer;
+    color: #777;
+    align-self: flex-start;
+}
+
+.sale-customer-modal-fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 15px;
+}
+
+.sale-customer-modal-fields label {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #44383a;
+}
+
+.sale-customer-modal-fields input,
+.sale-customer-modal-fields select,
+.sale-customer-modal-fields textarea {
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 43px;
+    padding: 10px 12px;
+    border: 1px solid #ded8d8;
+    border-radius: 8px;
+    background: #fff;
+    color: #302527;
+    font: inherit;
+    font-weight: 400;
+}
+
+.sale-customer-modal-fields textarea {
+    resize: vertical;
+}
+
+.sale-customer-modal-fields label:nth-child(1),
+.sale-customer-modal-fields label:nth-child(2),
+.sale-customer-modal-fields label:nth-child(4) {
+    grid-column: 1 / -1;
+}
+
+.sale-customer-modal-error {
+    padding: 10px 12px;
+    margin-bottom: 15px;
+    background: #fff0f0;
+    color: #a32626;
+    border-radius: 8px;
+    font-size: 13px;
+}
+
+.sale-customer-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 22px;
+}
+
+.sale-customer-modal-actions button {
+    min-height: 43px;
+    padding: 0 16px;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.sale-customer-cancel {
+    background: #fff;
+    border: 1px solid #ddd;
+    color: #555;
+}
+
+.sale-customer-save {
+    background: #7b4b50;
+    border: 1px solid #7b4b50;
+    color: #fff;
+}
+
+.sale-customer-modal-actions button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+@media (max-width: 520px) {
+    .sale-customer-modal {
+        padding: 19px;
+    }
+
+    .sale-customer-modal-fields {
+        grid-template-columns: 1fr;
+    }
+
+    .sale-customer-modal-fields label {
+        grid-column: 1 / -1;
+    }
+
+    .sale-customer-modal-actions {
+        flex-direction: column-reverse;
+    }
+
+    .sale-customer-modal-actions button {
+        width: 100%;
+    }
+
+    .sale-add-customer {
+        padding: 0 10px;
+        font-size: 12px;
+    }
+}

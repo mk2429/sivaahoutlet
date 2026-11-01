@@ -3,30 +3,31 @@ import { NextResponse } from "next/server";
 import mongoose from "mongoose";
 
 import connectDB from "../../../../lib/db";
-
 import Product from "../../../models/Product";
 import Customer from "../../../models/Customer";
 import Discount from "../../../models/Discount";
 import Sale from "../../../models/Sale";
 import InvoiceCounter from "../../../models/InvoiceCounter";
+import JewelleryLedger from "../../../models/JewelleryLedger";
+
+import {
+  PACKAGING_COST,
+  decodeBatchId,
+  calculatePiecePricing,
+} from "@/lib/pricing";
+
+function error(message, status = 400) {
+  return NextResponse.json({ error: message }, { status });
+}
+
+function round2(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
 
 function roundSellingPrice(price) {
   if (!Number.isFinite(price) || price <= 0) return null;
-
   const hundred = Math.floor(price / 100) * 100;
-
   return price - hundred < 50 ? hundred - 1 : hundred + 99;
-}
-
-function decodeBatch(batchId) {
-  const id = String(batchId || "");
-
-  if (!/^\d{14}$/.test(id)) return null;
-
-  return {
-    sourceRate: Number(id.slice(8, 11)),
-    labourPerGram: Number(id.slice(11, 14)),
-  };
 }
 
 async function generateInvoiceNumber() {
@@ -36,34 +37,22 @@ async function generateInvoiceNumber() {
     month: "2-digit",
   }).formatToParts(new Date());
 
-  const year = Number(
-    parts.find((part) => part.type === "year")?.value
-  );
-
-  const month = Number(
-    parts.find((part) => part.type === "month")?.value
-  );
-
+  const year = Number(parts.find((part) => part.type === "year")?.value);
+  const month = Number(parts.find((part) => part.type === "month")?.value);
   const startYear = month >= 4 ? year : year - 1;
-
-  const financialYear =
-    `${startYear}-${String(startYear + 1).slice(-2)}`;
+  const financialYear = `${startYear}-${String(startYear + 1).slice(-2)}`;
 
   const counter = await InvoiceCounter.findOneAndUpdate(
     { financialYear },
     { $inc: { lastNumber: 1 } },
-    {
-      new: true,
-      upsert: true,
-      setDefaultsOnInsert: true,
-    }
+    { new: true, upsert: true, setDefaultsOnInsert: true }
   );
 
   return `SV/${financialYear}/${String(counter.lastNumber).padStart(6, "0")}`;
 }
 
 export async function POST(request) {
-  const soldPieces = [];
+  let session;
 
   try {
     const body = await request.json();
@@ -79,10 +68,7 @@ export async function POST(request) {
     } = body;
 
     if (!Array.isArray(items) || items.length === 0) {
-      return NextResponse.json(
-        { error: "Select at least one jewellery piece." },
-        { status: 400 }
-      );
+      return error("Select at least one jewellery piece.");
     }
 
     const allowedMethods = [
@@ -95,68 +81,39 @@ export async function POST(request) {
     ];
 
     if (!allowedMethods.includes(paymentMethod)) {
-      return NextResponse.json(
-        { error: "Invalid payment method." },
-        { status: 400 }
-      );
+      return error("Invalid payment method.");
     }
 
     await connectDB();
 
-    let customer = null;
+    const db = mongoose.connection.db;
 
-    if (customerId) {
-      if (!mongoose.Types.ObjectId.isValid(customerId)) {
-        return NextResponse.json(
-          { error: "Invalid customer." },
-          { status: 400 }
-        );
-      }
-
-      customer = await Customer.findById(customerId).lean();
-
-      if (!customer) {
-        return NextResponse.json(
-          { error: "Customer not found." },
-          { status: 404 }
-        );
-      }
-    }
-
-    const rateDoc = await mongoose.connection.db
-      .collection("silverrates")
-      .findOne({ metal: "silver" });
+    const rateDoc = await db.collection("silverrates").findOne({
+      metal: "silver",
+    });
 
     const currentRate = Number(rateDoc?.ratePerGram);
 
     if (!Number.isFinite(currentRate) || currentRate <= 0) {
-      return NextResponse.json(
-        { error: "Please configure the current silver rate." },
-        { status: 400 }
-      );
+      return error("Please configure the current silver rate.");
     }
 
     const normalizedItems = [];
     const seenPieces = new Set();
 
+    // Validate and prepare all requested pieces.
     for (const requested of items) {
       if (
         !mongoose.Types.ObjectId.isValid(requested.productId) ||
         !mongoose.Types.ObjectId.isValid(requested.pieceId)
       ) {
-        return NextResponse.json(
-          { error: "Invalid product or piece selected." },
-          { status: 400 }
-        );
+        return error("Invalid product or piece selected.");
       }
 
       const uniqueKey = `${requested.productId}:${requested.pieceId}`;
 
       if (seenPieces.has(uniqueKey)) {
-        return NextResponse.json(
-          { error: "A jewellery piece cannot be added twice." },
-          { status: 400 }
-        );
+        return error("A jewellery piece cannot be added twice.");
       }
 
       seenPieces.add(uniqueKey);
@@ -164,137 +121,126 @@ export async function POST(request) {
       const product = await Product.findById(requested.productId);
 
       if (!product || product.active === false) {
-        return NextResponse.json(
-          { error: "A selected product is unavailable." },
-          { status: 400 }
-        );
+        return error("A selected product is unavailable.");
       }
 
       const piece = product.pieces.id(requested.pieceId);
 
       if (!piece || piece.status !== "inStock") {
-        return NextResponse.json(
-          {
-            error: `${product.name}: this piece is no longer in stock.`,
-          },
-          { status: 409 }
+        return error(
+          `${product.name}: this piece is no longer in stock.`,
+          409
         );
       }
 
-      const batch = decodeBatch(piece.batchId);
-
-      if (!batch) {
-        return NextResponse.json(
-          {
-            error: `${product.name}: invalid batch ID ${piece.batchId || "(missing)"}.`,
-          },
-          { status: 400 }
-        );
-      }
-
+      const batch = decodeBatchId(piece.batchId);
       const weight = Number(piece.weight);
 
-      if (!Number.isFinite(weight) || weight <= 0) {
-        return NextResponse.json(
-          { error: `${product.name}: invalid piece weight.` },
-          { status: 400 }
+      if (!batch || !Number.isFinite(weight) || weight <= 0) {
+        return error(
+          `${product.name}: invalid piece weight or batch ID.`
         );
       }
 
-      const costToday =
-        weight * (currentRate + batch.labourPerGram) + 50;
+      const pricing = calculatePiecePricing({
+        weight,
+        batch,
+        currentSilverRate: currentRate,
+      });
+
+      if (pricing.cpToday == null || pricing.cpSource == null) {
+        return error(`${product.name}: cost calculation failed.`);
+      }
 
       const listPrice = roundSellingPrice(
-        costToday / ((1 - 0.15) * (1 - 0.25))
+        pricing.cpToday / ((1 - 0.15) * (1 - 0.25))
       );
 
       if (!listPrice) {
-        return NextResponse.json(
-          { error: "Could not calculate a selling price." },
-          { status: 400 }
-        );
+        return error("Could not calculate a selling price.");
       }
 
       normalizedItems.push({
-        product,
-        piece,
-        item: {
-          productId: product._id,
-          pieceId: piece._id,
-          name: product.name,
-          sku: product.sku || "",
-          category: product.category || "",
-          batchId: piece.batchId,
-          hsnCode: "7113",
-          weight,
-          listPrice,
-          discountAmount: 0,
-          finalPrice: listPrice,
-        },
+        productId: product._id,
+        pieceId: piece._id,
+        productName: product.name,
+        sku: product.sku || "",
+        category: product.category || "",
+        batchId: piece.batchId,
+        weight,
+        batch,
+        listPrice,
+        discountAmount: 0,
+        finalPrice: listPrice,
+
+        actualAcquisitionCost: piece.actualAcquisitionCost ?? null,
+        calculatedSourceCost:
+          piece.calculatedSourceCost ?? pricing.cpSource,
+
+        replacementCostAtSale: pricing.cpToday,
+
+        // PACKAGING_COST is already included in pricing.cpToday.
+        packagingCostAtSale: PACKAGING_COST,
+        costAtSale: pricing.cpToday,
       });
     }
 
-    const grossAmount = normalizedItems.reduce(
-      (sum, row) => sum + row.item.listPrice,
-      0
-    );
+    let customer = null;
 
-    const totalWeight = normalizedItems.reduce(
-      (sum, row) => sum + row.item.weight,
-      0
-    );
+    if (customerId) {
+      if (!mongoose.Types.ObjectId.isValid(customerId)) {
+        return error("Invalid customer.");
+      }
+
+      customer = await Customer.findById(customerId).lean();
+
+      if (!customer) {
+        return error("Customer not found.", 404);
+      }
+    }
 
     let discount = null;
     let discountAmount = 0;
 
+    const grossAmount = round2(
+      normalizedItems.reduce((sum, item) => sum + item.listPrice, 0)
+    );
+
+    const totalWeight = normalizedItems.reduce(
+      (sum, item) => sum + item.weight,
+      0
+    );
+
     if (discountId) {
       if (!mongoose.Types.ObjectId.isValid(discountId)) {
-        return NextResponse.json(
-          { error: "Invalid discount." },
-          { status: 400 }
-        );
+        return error("Invalid discount.");
       }
 
       discount = await Discount.findById(discountId).lean();
 
       if (!discount || !discount.active) {
-        return NextResponse.json(
-          { error: "This discount is not active." },
-          { status: 400 }
-        );
+        return error("This discount is not active.");
       }
 
       const now = new Date();
 
       if (discount.startDate && new Date(discount.startDate) > now) {
-        return NextResponse.json(
-          { error: "This discount has not started yet." },
-          { status: 400 }
-        );
+        return error("This discount has not started yet.");
       }
 
       if (discount.endDate && new Date(discount.endDate) < now) {
-        return NextResponse.json(
-          { error: "This discount has expired." },
-          { status: 400 }
-        );
+        return error("This discount has expired.");
       }
 
       if (grossAmount < Number(discount.minBillAmount || 0)) {
-        return NextResponse.json(
-          { error: `Minimum bill amount is ₹${discount.minBillAmount}.` },
-          { status: 400 }
-        );
+        return error(`Minimum bill amount is ₹${discount.minBillAmount}.`);
       }
 
       if (totalWeight < Number(discount.minWeightGrams || 0)) {
-        return NextResponse.json(
-          { error: `Minimum weight is ${discount.minWeightGrams}g.` },
-          { status: 400 }
-        );
+        return error(`Minimum weight is ${discount.minWeightGrams}g.`);
       }
 
-      const eligibleRows = normalizedItems.filter(({ item }) => {
+      const eligible = normalizedItems.filter((item) => {
         if (discount.applicability === "category") {
           return (discount.categories || []).includes(item.category);
         }
@@ -306,61 +252,44 @@ export async function POST(request) {
         return true;
       });
 
-      if (eligibleRows.length === 0) {
-        return NextResponse.json(
-          { error: "No selected items qualify for this discount." },
-          { status: 400 }
-        );
+      if (!eligible.length) {
+        return error("No selected items qualify for this discount.");
       }
 
-      for (const row of eligibleRows) {
-        const rawDiscount =
+      for (const item of eligible) {
+        const raw =
           discount.type === "percentage"
-            ? (row.item.listPrice * Number(discount.value || 0)) / 100
+            ? (item.listPrice * Number(discount.value || 0)) / 100
             : Number(discount.value || 0);
 
-        // Maximum discount allowed: 15% per item.
-        const applied = Math.min(
-          rawDiscount,
-          row.item.listPrice * 0.15
+        item.discountAmount = round2(
+          Math.min(raw, item.listPrice * 0.15)
         );
 
-        row.item.discountAmount =
-          Math.round(applied * 100) / 100;
-
-        row.item.finalPrice = Math.max(
-          0,
-          row.item.listPrice - row.item.discountAmount
+        item.finalPrice = round2(
+          Math.max(0, item.listPrice - item.discountAmount)
         );
 
-        discountAmount += row.item.discountAmount;
+        discountAmount += item.discountAmount;
       }
     }
 
-    discountAmount = Math.round(discountAmount * 100) / 100;
+    discountAmount = round2(discountAmount);
 
-    const netAmount =
-      Math.round((grossAmount - discountAmount) * 100) / 100;
+    // Final customer payable amount is a whole rupee.
+    const calculatedNetAmount = round2(grossAmount - discountAmount);
+    const netAmount = Math.round(calculatedNetAmount);
 
-    // Assumes GST-inclusive pricing and an intra-state sale.
-    // Confirm tax treatment and HSN classification with your CA.
     const taxRate = Number(process.env.GST_RATE || 3);
 
     if (!Number.isFinite(taxRate) || taxRate < 0 || taxRate > 100) {
-      return NextResponse.json(
-        { error: "Invalid GST rate configuration." },
-        { status: 500 }
-      );
+      return error("Invalid GST rate configuration.", 500);
     }
 
-    const taxableValue =
-      Math.round((netAmount / (1 + taxRate / 100)) * 100) / 100;
-
-    const totalTax =
-      Math.round((netAmount - taxableValue) * 100) / 100;
-
-    const cgst = Math.round((totalTax / 2) * 100) / 100;
-    const sgst = Math.round((totalTax - cgst) * 100) / 100;
+    const taxableValue = round2(netAmount / (1 + taxRate / 100));
+    const totalTax = round2(netAmount - taxableValue);
+    const cgst = round2(totalTax / 2);
+    const sgst = round2(totalTax - cgst);
 
     const taxSnapshot = {
       rate: taxRate,
@@ -381,13 +310,11 @@ export async function POST(request) {
     if (
       !Number.isFinite(paid) ||
       paid < 0 ||
-      paid > netAmount
+      paid > netAmount ||
+      !Number.isInteger(paid)
     ) {
-      return NextResponse.json(
-        {
-          error: "Amount received must be between ₹0 and the bill total.",
-        },
-        { status: 400 }
+      return error(
+        "Amount received must be a whole rupee between ₹0 and the bill total."
       );
     }
 
@@ -401,7 +328,7 @@ export async function POST(request) {
     );
 
     if (
-      validPaymentSummary.length > 0 &&
+      validPaymentSummary.length &&
       (
         validPaymentSummary.some(
           (line) =>
@@ -409,118 +336,170 @@ export async function POST(request) {
             !Number.isFinite(Number(line.amount)) ||
             Number(line.amount) < 0
         ) ||
-        Math.abs(paymentTotal - paid) > 0.02
+        Math.abs(round2(paymentTotal) - paid) > 0.001
       )
     ) {
-      return NextResponse.json(
-        {
-          error: "Payment breakdown must equal the amount received.",
-        },
-        { status: 400 }
+      return error("Payment breakdown must equal the amount received.");
+    }
+
+    // Calculate permanent item-level profit snapshots.
+    for (const item of normalizedItems) {
+      item.profitAtSale = round2(
+        item.finalPrice - item.costAtSale
       );
     }
+
+    // Bill-level cost and profit snapshots.
+    const totalCostAtSale = round2(
+      normalizedItems.reduce(
+        (sum, item) => sum + item.costAtSale,
+        0
+      )
+    );
+
+    const profitAtSale = round2(netAmount - totalCostAtSale);
 
     const billNumber = await generateInvoiceNumber();
 
-    // Conditionally mark each piece sold to prevent duplicate sales.
-    for (const row of normalizedItems) {
-      const update = await Product.updateOne(
-        {
-          _id: row.product._id,
-          pieces: {
-            $elemMatch: {
-              _id: row.piece._id,
-              status: "inStock",
-            },
-          },
-        },
-        {
-          $set: { "pieces.$.status": "sold" },
-        }
-      );
+    const saleItems = normalizedItems.map((item) => ({
+      productId: item.productId,
+      pieceId: item.pieceId,
+      name: item.productName,
+      sku: item.sku,
+      category: item.category,
+      batchId: item.batchId,
+      hsnCode: "7113",
+      weight: item.weight,
+      listPrice: item.listPrice,
+      discountAmount: item.discountAmount,
+      finalPrice: item.finalPrice,
 
-      if (update.modifiedCount !== 1) {
-        throw new Error(
-          `${row.product.name}: stock changed. Please reload and try again.`
-        );
-      }
+      actualAcquisitionCost: item.actualAcquisitionCost,
+      calculatedSourceCost: item.calculatedSourceCost,
+      replacementCostAtSale: item.replacementCostAtSale,
 
-      soldPieces.push({
-        productId: row.product._id,
-        pieceId: row.piece._id,
-      });
-    }
+      packagingCostAtSale: item.packagingCostAtSale,
+      costAtSale: item.costAtSale,
+      profitAtSale: item.profitAtSale,
+    }));
 
-    const sale = await Sale.create({
-      billNumber,
-silverRateAtSale: currentRate,
-      customerId: customer?._id || null,
+    session = await mongoose.startSession();
 
-      customerSnapshot: {
-        name: customer?.name || "Walk-in Customer",
-        whatsappNumber: customer?.whatsappNumber || "",
-        address: customer?.address || "",
-        gstin: customer?.gstin || "",
-      },
+    let savedSale;
 
-      items: normalizedItems.map((row) => row.item),
-
-      discount: discount
-        ? {
-            discountId: discount._id,
-            name: discount.name || "",
-            type: discount.type || "",
-            value: Number(discount.value || 0),
-          }
-        : undefined,
-
-      grossAmount,
-      discountAmount,
-      netAmount,
-      taxSnapshot,
-
-      amountPaid: paid,
-      balance: Math.round((netAmount - paid) * 100) / 100,
-
-      paymentMethod,
-      paymentSummary: validPaymentSummary,
-
-      salespersonName: String(salespersonName || ""),
-      status: "completed",
-    });
-
-    return NextResponse.json(
-      { success: true, sale },
-      { status: 201 }
-    );
-  } catch (error) {
-    console.error("Sale save error:", error);
-
-    // Best-effort rollback if an error occurred after stock was marked sold.
-    for (const piece of soldPieces.reverse()) {
-      try {
-        await Product.updateOne(
+    await session.withTransaction(async () => {
+      // Recheck and mark every piece sold inside the transaction.
+      for (const item of normalizedItems) {
+        const update = await Product.updateOne(
           {
-            _id: piece.productId,
+            _id: item.productId,
             pieces: {
               $elemMatch: {
-                _id: piece.pieceId,
-                status: "sold",
+                _id: item.pieceId,
+                status: "inStock",
               },
             },
           },
-          {
-            $set: { "pieces.$.status": "inStock" },
-          }
+          { $set: { "pieces.$.status": "sold" } },
+          { session }
         );
-      } catch (rollbackError) {
-        console.error("Stock rollback error:", rollbackError);
+
+        if (update.modifiedCount !== 1) {
+          throw new Error(
+            `${item.productName}: stock changed. Reload and try again.`
+          );
+        }
+
+        const product = await Product.findById(item.productId).session(session);
+
+        if (product) {
+          product.stockQuantity = product.pieces.filter(
+            (piece) => piece.status === "inStock"
+          ).length;
+
+          await product.save({ session });
+        }
       }
-    }
+
+      const [sale] = await Sale.create(
+        [
+          {
+            billNumber,
+            silverRateAtSale: currentRate,
+
+            customerId: customer?._id || null,
+
+            customerSnapshot: {
+              name: customer?.name || "Walk-in Customer",
+              whatsappNumber: customer?.whatsappNumber || "",
+              address: customer?.address || "",
+              gstin: customer?.gstin || "",
+            },
+
+            items: saleItems,
+
+            discount: discount
+              ? {
+                  discountId: discount._id,
+                  name: discount.name || "",
+                  type: discount.type || "",
+                  value: Number(discount.value || 0),
+                }
+              : undefined,
+
+            grossAmount,
+            discountAmount,
+            netAmount,
+
+            // Permanent bill-level snapshots.
+            totalCostAtSale,
+            profitAtSale,
+
+            taxSnapshot,
+            amountPaid: paid,
+            balance: round2(netAmount - paid),
+            paymentMethod,
+            paymentSummary: validPaymentSummary,
+            salespersonName: String(salespersonName || ""),
+            status: "completed",
+          },
+        ],
+        { session }
+      );
+
+      const ledgerEntries = normalizedItems.map((item) => ({
+        entryDate: sale.createdAt || new Date(),
+        movementType: "sale",
+        direction: "out",
+        productId: item.productId,
+        pieceId: item.pieceId,
+        saleId: sale._id,
+        billNumber,
+        sku: item.sku,
+        productName: item.productName,
+        batchId: item.batchId,
+        weight: item.weight,
+        sourceSilverRate: currentRate,
+        labourPerGram: item.batch.labourPerGram,
+        actualAcquisitionCost: item.actualAcquisitionCost,
+        calculatedSourceCost: item.calculatedSourceCost,
+        reason: "Jewellery sold",
+        reference: billNumber,
+      }));
+
+      await JewelleryLedger.insertMany(ledgerEntries, { session });
+
+      savedSale = sale;
+    });
 
     return NextResponse.json(
-      { error: error.message || "Unable to save sale." },
-      { status: 500 }
+      { success: true, sale: savedSale },
+      { status: 201 }
     );
+  } catch (e) {
+    console.error("Sale save error:", e);
+    return error(e.message || "Unable to save sale.", 500);
+  } finally {
+    if (session) await session.endSession();
   }
 }

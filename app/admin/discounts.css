@@ -46,4 +46,43 @@
   .discount-wide {
     grid-column: auto;
   }
+}.discount-form-description {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #777;
+  margin: -8px 0 22px;
+  max-width: 600px;
+}.discount-field textarea {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid #e2dbd1;
+  border-radius: 9px;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 85px;
+  background: #fff;
+  box-sizing: border-box;
+}
+
+.discount-field textarea:focus {
+  outline: none;
+  border-color: #28543f;
+  box-shadow: 0 0 0 2px rgba(40, 84, 63, 0.1);
+}
+
+.discount-field small {
+  display: block;
+  text-align: right;
+  color: #888;
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.discount-description {
+  color: #666;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 6px 0 10px;
 }

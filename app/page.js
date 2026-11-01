@@ -421,20 +421,28 @@ function sendWhatsAppReport() {
               ) : (
                 selectedOffers.map((offer) => (
                   <article className="offer-card" key={offer.id}>
-                    <div className="offer-card-heading">
-                      <div>
-                        <strong>{offer.name}</strong>
-                        <span>
-                          {offer.type === "percentage"
-                            ? `${offer.value}% off`
-                            : `${money(offer.value)} off`}
-                        </span>
-                      </div>
-                      <div className="offer-card-price">
-                        <strong>{money(offer.price)}</strong>
-                        <small>Indicative price</small>
-                      </div>
-                    </div>
+                   <div className="offer-card-heading">
+  <div>
+    <strong>{offer.name}</strong>
+
+    <span>
+      {offer.type === "percentage"
+        ? `${offer.value}% off`
+        : `${money(offer.value)} off`}
+    </span>
+
+    {offer.description && (
+      <p className="offer-description">
+        {offer.description}
+      </p>
+    )}
+  </div>
+
+  <div className="offer-card-price">
+    <strong>{money(offer.price)}</strong>
+    <small>Indicative price</small>
+  </div>
+</div>
 
                     <div className="offer-savings">
                       Potential saving: {money(offer.amountOff)}

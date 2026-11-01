@@ -103,7 +103,17 @@ export default function SaleDashboard() {
     const [customerId, setCustomerId] = useState("");
     const [customerSearch, setCustomerSearch] = useState("");
     const [customerPickerOpen, setCustomerPickerOpen] = useState(false);
-
+    const [addCustomerOpen, setAddCustomerOpen] = useState(false);
+    const [customerSaving, setCustomerSaving] = useState(false);
+    const [customerFormError, setCustomerFormError] = useState("");
+    const [newCustomer, setNewCustomer] = useState({
+        name: "",
+        whatsappNumber: "",
+        gender: "",
+        address: "",
+        dateOfBirth: "",
+        anniversaryDate: "",
+    });
     const [search, setSearch] = useState("");
     const [selected, setSelected] = useState([]);
 
@@ -375,18 +385,99 @@ export default function SaleDashboard() {
                 : previous.filter((_, i) => i !== index)
         );
     }
+    async function handleAddCustomer() {
+        setCustomerFormError("");
 
+        const name = newCustomer.name.trim();
+        const whatsappNumber = newCustomer.whatsappNumber.replace(/\D/g, "");
+
+        if (!name) {
+            setCustomerFormError("Please enter customer name.");
+            return;
+        }
+
+        if (whatsappNumber.length !== 10) {
+            setCustomerFormError("Enter a valid 10-digit mobile number.");
+            return;
+        }
+
+        if (!newCustomer.gender) {
+            setCustomerFormError("Please select gender.");
+            return;
+        }
+
+        setCustomerSaving(true);
+
+        try {
+            const response = await fetch("/api/outlet/customers", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    ...newCustomer,
+                    name,
+                    whatsappNumber,
+                }),
+            });
+
+            const result = await response.json();
+
+            if (!response.ok) {
+                throw new Error(
+                    result.message || result.error || "Could not add customer."
+                );
+            }
+
+            if (!result.customer?._id) {
+                throw new Error("Customer saved, but customer details were not returned.");
+            }
+
+            const customer = result.customer;
+
+            // Add the new customer to the existing customer list.
+            setData((previous) => ({
+                ...previous,
+                customers: [
+                    customer,
+                    ...previous.customers.filter(
+                        (item) => item._id !== customer._id
+                    ),
+                ],
+            }));
+
+            // Automatically select the newly created customer.
+            setCustomerId(customer._id);
+            setCustomerSearch("");
+            setCustomerPickerOpen(false);
+
+            setNewCustomer({
+                name: "",
+                whatsappNumber: "",
+                gender: "",
+                address: "",
+                dateOfBirth: "",
+                anniversaryDate: "",
+            });
+
+            setAddCustomerOpen(false);
+        } catch (err) {
+            setCustomerFormError(err.message || "Could not add customer.");
+        } finally {
+            setCustomerSaving(false);
+        }
+    }
     async function completeSale(event) {
         event.preventDefault();
         setError("");
-if (!customerId || !selectedCustomer) {
-    window.alert("Please select a customer before creating the bill.");
-    return;
-}
-if (!salespersonName.trim()) {
-    window.alert("Please select a salesperson.");
-    return;
-}
+        if (!customerId || !selectedCustomer) {
+            window.alert("Please select a customer before creating the bill.");
+            return;
+        }
+        if (!salespersonName.trim()) {
+            window.alert("Please select a salesperson.");
+            return;
+        }
         if (!selectedPieces.length) {
             setError("Select at least one jewellery piece.");
             return;
@@ -524,7 +615,7 @@ if (!salespersonName.trim()) {
                     <label className="sale-label" htmlFor="customer-search">
                         Search customer by name or mobile
                     </label>
-
+<div className="sale-customer-row">
                     <div className="sale-customer-picker">
                         <input
                             id="customer-search"
@@ -564,7 +655,7 @@ if (!salespersonName.trim()) {
 
                         {customerPickerOpen && (
                             <div className="sale-customer-results">
-                          
+
 
                                 {filteredCustomers.map((customer) => (
                                     <button
@@ -595,7 +686,25 @@ if (!salespersonName.trim()) {
                             </div>
                         )}
                     </div>
-
+                        <button
+        type="button"
+        className="sale-add-customer"
+        onClick={() => {
+            setCustomerFormError("");
+            setNewCustomer({
+                name: "",
+                whatsappNumber: "",
+                gender: "",
+                address: "",
+                dateOfBirth: "",
+                anniversaryDate: "",
+            });
+            setAddCustomerOpen(true);
+        }}
+    >
+        <span>＋</span> Add
+    </button>
+</div>
                     <div className="sale-section-heading sale-inventory-heading">
                         <span>02</span>
                         <h2>Available Jewellery</h2>
@@ -955,6 +1064,159 @@ if (!salespersonName.trim()) {
                     </p>
                 </aside>
             </form>
+            {addCustomerOpen && (
+    <div
+        className="sale-customer-modal-overlay"
+        onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !customerSaving) {
+                setAddCustomerOpen(false);
+            }
+        }}
+    >
+        <section className="sale-customer-modal">
+            <div className="sale-customer-modal-header">
+                <div>
+                    <span>NEW CUSTOMER</span>
+                    <h2>Add Customer</h2>
+                    <p>Register a customer without leaving this bill.</p>
+                </div>
+
+                <button
+                    type="button"
+                    onClick={() => setAddCustomerOpen(false)}
+                    disabled={customerSaving}
+                >
+                    ×
+                </button>
+            </div>
+
+            {customerFormError && (
+                <div className="sale-customer-modal-error">
+                    {customerFormError}
+                </div>
+            )}
+
+            <div className="sale-customer-modal-fields">
+                <label>
+                    Customer Name *
+                    <input
+                        autoFocus
+                        value={newCustomer.name}
+                        maxLength={100}
+                        placeholder="Enter full name"
+                        onChange={(e) =>
+                            setNewCustomer({
+                                ...newCustomer,
+                                name: e.target.value,
+                            })
+                        }
+                    />
+                </label>
+
+                <label>
+                    WhatsApp / Mobile Number *
+                    <input
+                        type="tel"
+                        inputMode="numeric"
+                        maxLength={10}
+                        value={newCustomer.whatsappNumber}
+                        placeholder="10-digit mobile number"
+                        onChange={(e) =>
+                            setNewCustomer({
+                                ...newCustomer,
+                                whatsappNumber: e.target.value.replace(/\D/g, "").slice(0, 10),
+                            })
+                        }
+                    />
+                </label>
+
+                <label>
+                    Gender *
+                    <select
+                        value={newCustomer.gender}
+                        onChange={(e) =>
+                            setNewCustomer({
+                                ...newCustomer,
+                                gender: e.target.value,
+                            })
+                        }
+                    >
+                        <option value="">Select gender</option>
+                        <option value="Female">Female</option>
+                        <option value="Male">Male</option>
+                        <option value="Other">Other</option>
+                        <option value="Prefer not to say">
+                            Prefer not to say
+                        </option>
+                    </select>
+                </label>
+
+                <label>
+                    Address
+                    <textarea
+                        rows={2}
+                        value={newCustomer.address}
+                        placeholder="House, street, town, PIN code"
+                        onChange={(e) =>
+                            setNewCustomer({
+                                ...newCustomer,
+                                address: e.target.value,
+                            })
+                        }
+                    />
+                </label>
+
+                <label>
+                    Date of Birth
+                    <input
+                        type="date"
+                        value={newCustomer.dateOfBirth}
+                        onChange={(e) =>
+                            setNewCustomer({
+                                ...newCustomer,
+                                dateOfBirth: e.target.value,
+                            })
+                        }
+                    />
+                </label>
+
+                <label>
+                    Anniversary Date
+                    <input
+                        type="date"
+                        value={newCustomer.anniversaryDate}
+                        onChange={(e) =>
+                            setNewCustomer({
+                                ...newCustomer,
+                                anniversaryDate: e.target.value,
+                            })
+                        }
+                    />
+                </label>
+            </div>
+
+            <div className="sale-customer-modal-actions">
+                <button
+                    type="button"
+                    className="sale-customer-cancel"
+                    disabled={customerSaving}
+                    onClick={() => setAddCustomerOpen(false)}
+                >
+                    Cancel
+                </button>
+
+                <button
+                    type="button"
+                    className="sale-customer-save"
+                    disabled={customerSaving}
+                    onClick={handleAddCustomer}
+                >
+                    {customerSaving ? "Saving..." : "Save & Select Customer"}
+                </button>
+            </div>
+        </section>
+    </div>
+)}
         </main>
     );
 }

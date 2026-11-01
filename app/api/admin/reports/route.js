@@ -1,47 +1,27 @@
-
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import mongoose from "mongoose";
 
 import connectDB from "../../../../lib/db";
 import { verifyAdminToken } from "../../../../lib/admin-auth";
 
 import Sale from "../../../models/Sale";
 import Product from "../../../models/Product";
+import SilverMatch from "../../../models/SilverMatch";
+import OutletTransaction from "../../../models/OutletTransaction";
 
-import {
-  decodeBatchId,
-  calculatePiecePricing,
-} from "@/lib/pricing";
-
-
-
-const PACKAGING_COST = 50;
-
-function isAdminTokenValid(token) {
-  if (!token) return false;
-
-  try {
-    return verifyAdminToken(token);
-  } catch {
-    return false;
-  }
-}
-
-function round2(value) {
-  return Math.round((Number(value) || 0) * 100) / 100;
+function num(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
 }
 
 function money(value) {
-  return round2(value);
+  return Math.round(num(value) * 100) / 100;
 }
 
-function toNumber(value) {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : 0;
+function round3(value) {
+  return Math.round(num(value) * 1000) / 1000;
 }
 
-// Interpret date filters in Indian Standard Time.
 function startOfIndiaDay(dateString) {
   return new Date(`${dateString}T00:00:00.000+05:30`);
 }
@@ -50,7 +30,7 @@ function endOfIndiaDay(dateString) {
   return new Date(`${dateString}T23:59:59.999+05:30`);
 }
 
-function getIndiaDateKey(date) {
+function indiaDateKey(date) {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Kolkata",
     year: "numeric",
@@ -59,91 +39,8 @@ function getIndiaDateKey(date) {
   }).format(new Date(date));
 }
 
-function getIndiaMonthKey(date) {
-  return getIndiaDateKey(date).slice(0, 7);
-}
-
-function getItemPricing(item, silverRateAtSale) {
-  const weight = toNumber(item.weight);
-  const sellingPrice = money(item.finalPrice);
-  const batch = decodeBatchId(item.batchId);
-
-  if (!batch || weight <= 0) {
-    return {
-      weight,
-      sellingPrice,
-      batchDate: null,
-      sourceSilverRate: null,
-      labourPerGram: null,
-      cpInstant: null,
-      cpSource: null,
-      profitInstant: null,
-      profitSource: null,
-      pricingStatus: "Invalid weight or batch ID",
-    };
-  }
-
-  const instantRate = toNumber(silverRateAtSale);
-
-  if (instantRate <= 0) {
-    return {
-      weight,
-      sellingPrice,
-      batchDate: batch.batchDate,
-      sourceSilverRate: batch.sourceSilverRate,
-      labourPerGram: batch.labourPerGram,
-      cpInstant: null,
-      cpSource: null,
-      profitInstant: null,
-      profitSource: null,
-      pricingStatus: "Invalid silver rate at sale",
-    };
-  }
-
-  // Use the shared pricing helper for both cost calculations.
-  const instantPricing = calculatePiecePricing({
-    weight,
-    batch,
-    currentSilverRate: instantRate,
-  });
-
-  // cpSource uses the batch's source silver rate.
-  const sourcePricing = calculatePiecePricing({
-    weight,
-    batch,
-    currentSilverRate: batch.sourceSilverRate,
-  });
-
-  const cpInstant = instantPricing.cpToday;
-  const cpSource = sourcePricing.cpSource;
-
-  if (cpInstant == null || cpSource == null) {
-    return {
-      weight,
-      sellingPrice,
-      batchDate: batch.batchDate,
-      sourceSilverRate: batch.sourceSilverRate,
-      labourPerGram: batch.labourPerGram,
-      cpInstant: null,
-      cpSource: null,
-      profitInstant: null,
-      profitSource: null,
-      pricingStatus: "Cost calculation failed",
-    };
-  }
-
-  return {
-    weight,
-    sellingPrice,
-    batchDate: batch.batchDate,
-    sourceSilverRate: batch.sourceSilverRate,
-    labourPerGram: batch.labourPerGram,
-    cpInstant: money(cpInstant),
-    cpSource: money(cpSource),
-    profitInstant: money(sellingPrice - cpInstant),
-    profitSource: money(sellingPrice - cpSource),
-    pricingStatus: "Ready",
-  };
+function indiaMonthKey(date) {
+  return indiaDateKey(date).slice(0, 7);
 }
 
 function emptyTotals() {
@@ -156,35 +53,29 @@ function emptyTotals() {
     netSales: 0,
     amountPaid: 0,
     balance: 0,
-    profitInstant: 0,
-    profitSource: 0,
-    profitInstantItems: 0,
-    profitSourceItems: 0,
+    operatingMargin: 0,
+    itemsWithProfit: 0,
+    itemsMissingProfit: 0,
   };
 }
 
 function addBillToTotals(totals, bill) {
   totals.bills += 1;
-  totals.grossSales += toNumber(bill.grossAmount);
-  totals.discounts += toNumber(bill.discountAmount);
-  totals.netSales += toNumber(bill.netAmount);
-  totals.amountPaid += toNumber(bill.amountPaid);
-  totals.balance += toNumber(bill.balance);
+  totals.grossSales += num(bill.grossAmount);
+  totals.discounts += num(bill.discountAmount);
+  totals.netSales += num(bill.netAmount);
+  totals.amountPaid += num(bill.amountPaid);
+  totals.balance += num(bill.balance);
 
-  for (const item of bill.items) {
-    const pricing = item.pricing;
+  for (const item of bill.items || []) {
+    totals.piecesSold += num(item.quantity) || 1;
+    totals.totalWeight += num(item.weight);
 
-    totals.piecesSold += toNumber(item.quantity) || 1;
-    totals.totalWeight += toNumber(item.weight);
-
-    if (pricing?.profitInstant != null) {
-      totals.profitInstant += pricing.profitInstant;
-      totals.profitInstantItems += 1;
-    }
-
-    if (pricing?.profitSource != null) {
-      totals.profitSource += pricing.profitSource;
-      totals.profitSourceItems += 1;
+    if (item.operatingMargin !== null) {
+      totals.operatingMargin += item.operatingMargin;
+      totals.itemsWithProfit += 1;
+    } else {
+      totals.itemsMissingProfit += 1;
     }
   }
 }
@@ -197,13 +88,21 @@ function finalizeTotals(totals) {
     netSales: money(totals.netSales),
     amountPaid: money(totals.amountPaid),
     balance: money(totals.balance),
-    totalWeight: round2(totals.totalWeight),
-    profitInstant: money(totals.profitInstant),
-    profitSource: money(totals.profitSource),
+    totalWeight: round3(totals.totalWeight),
+    operatingMargin: money(totals.operatingMargin),
     averageBillValue: totals.bills
       ? money(totals.netSales / totals.bills)
       : 0,
   };
+}
+
+function getProfitSnapshot(item) {
+  // Never recalculate an old sale using today's silver rate.
+  const value = item?.profitAtSale;
+
+  return value === null || value === undefined
+    ? null
+    : money(value);
 }
 
 export async function GET(request) {
@@ -211,7 +110,7 @@ export async function GET(request) {
     const cookieStore = await cookies();
     const token = cookieStore.get("sivaah_admin_access")?.value;
 
-    if (!(await isAdminTokenValid(token))) {
+    if (!token || !(await verifyAdminToken(token))) {
       return NextResponse.json(
         { success: false, error: "Unauthorized" },
         { status: 401 }
@@ -221,7 +120,6 @@ export async function GET(request) {
     await connectDB();
 
     const { searchParams } = new URL(request.url);
-
     const from = searchParams.get("from");
     const to = searchParams.get("to");
 
@@ -249,54 +147,37 @@ export async function GET(request) {
       );
     }
 
-    // Only completed bills are counted in sales/profit reports.
+    // 1. Sales in the selected period.
     const sales = await Sale.find({
       status: "completed",
-      createdAt: {
-        $gte: startDate,
-        $lte: endDate,
-      },
+      createdAt: { $gte: startDate, $lte: endDate },
     })
       .sort({ createdAt: -1 })
       .lean();
 
     const bills = sales.map((sale) => {
-      const items = (sale.items || []).map((item) => {
-        const pricing = getItemPricing(
-          item,
-          sale.silverRateAtSale
-        );
+      const items = (sale.items || []).map((item) => ({
+        ...item,
+        quantity: num(item.quantity) || 1,
+        weight: num(item.weight),
+        listPrice: money(item.listPrice),
+        discountAmount: money(item.discountAmount),
+        finalPrice: money(item.finalPrice),
+        operatingMargin: getProfitSnapshot(item),
+        profitStatus:
+          getProfitSnapshot(item) === null
+            ? "Missing sale-time profit snapshot"
+            : "Recorded at sale",
+      }));
 
-        return {
-          ...item,
-          quantity: toNumber(item.quantity) || 1,
-          weight: toNumber(item.weight),
-          listPrice: money(item.listPrice),
-          discountAmount: money(item.discountAmount),
-          finalPrice: money(item.finalPrice),
-          pricing,
-        };
-      });
-
-      const profitInstant = items.reduce(
-        (sum, item) =>
-          sum + (item.pricing.profitInstant ?? 0),
-        0
+      const validItems = items.filter(
+        (item) => item.operatingMargin !== null
       );
 
-      const profitSource = items.reduce(
-        (sum, item) =>
-          sum + (item.pricing.profitSource ?? 0),
+      const operatingMargin = validItems.reduce(
+        (sum, item) => sum + item.operatingMargin,
         0
       );
-
-      const instantCount = items.filter(
-        (item) => item.pricing.profitInstant != null
-      ).length;
-
-      const sourceCount = items.filter(
-        (item) => item.pricing.profitSource != null
-      ).length;
 
       return {
         _id: String(sale._id),
@@ -305,7 +186,7 @@ export async function GET(request) {
         customerName:
           sale.customerSnapshot?.name || "Walk-in Customer",
         salespersonName: sale.salespersonName || "—",
-        silverRateAtSale: toNumber(sale.silverRateAtSale),
+        silverRateAtSale: num(sale.silverRateAtSale),
         grossAmount: money(sale.grossAmount),
         discountAmount: money(sale.discountAmount),
         netAmount: money(sale.netAmount),
@@ -314,21 +195,127 @@ export async function GET(request) {
         paymentMethod: sale.paymentMethod || "—",
         paymentSummary: sale.paymentSummary || [],
         items,
-        profitInstant: instantCount ? money(profitInstant) : null,
-        profitSource: sourceCount ? money(profitSource) : null,
-        profitInstantItems: instantCount,
-        profitSourceItems: sourceCount,
+        operatingMargin:
+          validItems.length === items.length
+            ? money(operatingMargin)
+            : null,
+        itemsWithProfit: validItems.length,
+        itemsMissingProfit: items.length - validItems.length,
       };
     });
 
+    // 2. Expenses in the selected period.
+    // Purchases, capital, loans, transfers and withdrawals are excluded.
+    const expenseTransactions = await OutletTransaction.find({
+      isVoided: { $ne: true },
+      profitTreatment: "expense",
+      transactionDate: { $gte: startDate, $lte: endDate },
+    })
+      .sort({ transactionDate: -1 })
+      .lean();
+
+    const expenses = money(
+      expenseTransactions.reduce(
+        (sum, entry) => sum + num(entry.amount),
+        0
+      )
+    );
+
+    const expenseRows = expenseTransactions.map((entry) => ({
+      _id: String(entry._id),
+      date: entry.transactionDate,
+      category: entry.category || "Other",
+      description: entry.description || "",
+      amount: money(entry.amount),
+      paymentMethod: entry.paymentMethod || "—",
+      account: entry.account || "—",
+    }));
+
+    // 3. Confirmed silver matches in the selected period.
+    // Match adjustments belong to matchDate, not the original sale date.
+    const confirmedMatches = await SilverMatch.find({
+      status: "confirmed",
+      matchDate: { $gte: startDate, $lte: endDate },
+    })
+      .sort({ matchDate: -1 })
+      .lean();
+
+    const confirmedSilverAdjustment = money(
+      confirmedMatches.reduce(
+        (sum, match) => sum + num(match.adjustmentPaise) / 100,
+        0
+      )
+    );
+
+    const matchedGramsInPeriod = round3(
+      confirmedMatches.reduce(
+        (sum, match) => sum + num(match.matchedGrams),
+        0
+      )
+    );
+
+    // 4. Outstanding sold silver as of the selected end date.
+    // This includes earlier sales still awaiting replacement.
+    const allSalesUntilEnd = await Sale.find({
+      status: "completed",
+      createdAt: { $lte: endDate },
+    })
+      .select("_id items")
+      .lean();
+
+    const allConfirmedMatchesUntilEnd = await SilverMatch.find({
+      status: "confirmed",
+      matchDate: { $lte: endDate },
+    })
+      .select("saleId pieceId matchedGrams")
+      .lean();
+
+    const matchedBySalePiece = new Map();
+
+    for (const match of allConfirmedMatchesUntilEnd) {
+      const key = `${String(match.saleId)}_${String(match.pieceId)}`;
+      matchedBySalePiece.set(
+        key,
+        (matchedBySalePiece.get(key) || 0) + num(match.matchedGrams)
+      );
+    }
+
+    let totalSoldGramsUntilEnd = 0;
+    let totalMatchedGramsUntilEnd = 0;
+
+    for (const sale of allSalesUntilEnd) {
+      for (const item of sale.items || []) {
+        const weight = num(item.weight);
+        const pieceId = item.pieceId ? String(item.pieceId) : "";
+
+        if (weight <= 0 || !pieceId) continue;
+
+        const key = `${String(sale._id)}_${pieceId}`;
+        const matched = matchedBySalePiece.get(key) || 0;
+
+        totalSoldGramsUntilEnd += weight;
+        totalMatchedGramsUntilEnd += Math.min(weight, matched);
+      }
+    }
+
+    const unmatchedSoldGrams = round3(
+      Math.max(0, totalSoldGramsUntilEnd - totalMatchedGramsUntilEnd)
+    );
+
+    // 5. Main profit calculation.
     const summary = emptyTotals();
     for (const bill of bills) addBillToTotals(summary, bill);
 
-    // Daily totals.
+    const operatingMargin = money(summary.operatingMargin);
+    const realProfit = money(
+      operatingMargin + confirmedSilverAdjustment - expenses
+    );
+
+    // 6. Daily sales and operating margin.
     const dailyMap = new Map();
 
     for (const bill of bills) {
-      const key = getIndiaDateKey(bill.createdAt);
+      const key = indiaDateKey(bill.createdAt);
 
       if (!dailyMap.has(key)) {
         dailyMap.set(key, emptyTotals());
@@ -344,11 +331,11 @@ export async function GET(request) {
         ...finalizeTotals(totals),
       }));
 
-    // Monthly totals.
+    // 7. Monthly sales and operating margin.
     const monthlyMap = new Map();
 
     for (const bill of bills) {
-      const key = getIndiaMonthKey(bill.createdAt);
+      const key = indiaMonthKey(bill.createdAt);
 
       if (!monthlyMap.has(key)) {
         monthlyMap.set(key, emptyTotals());
@@ -364,7 +351,7 @@ export async function GET(request) {
         ...finalizeTotals(totals),
       }));
 
-    // Product performance.
+    // 8. Product performance.
     const productMap = new Map();
 
     for (const bill of bills) {
@@ -379,26 +366,22 @@ export async function GET(request) {
             unitsSold: 0,
             revenue: 0,
             discounts: 0,
-            profitInstant: 0,
-            profitSource: 0,
-            instantCount: 0,
-            sourceCount: 0,
+            operatingMargin: 0,
+            itemsWithProfit: 0,
+            itemsMissingProfit: 0,
           });
         }
 
         const product = productMap.get(key);
-        product.unitsSold += toNumber(item.quantity) || 1;
-        product.revenue += toNumber(item.finalPrice);
-        product.discounts += toNumber(item.discountAmount);
+        product.unitsSold += num(item.quantity) || 1;
+        product.revenue += num(item.finalPrice);
+        product.discounts += num(item.discountAmount);
 
-        if (item.pricing.profitInstant != null) {
-          product.profitInstant += item.pricing.profitInstant;
-          product.instantCount += 1;
-        }
-
-        if (item.pricing.profitSource != null) {
-          product.profitSource += item.pricing.profitSource;
-          product.sourceCount += 1;
+        if (item.operatingMargin !== null) {
+          product.operatingMargin += item.operatingMargin;
+          product.itemsWithProfit += 1;
+        } else {
+          product.itemsMissingProfit += 1;
         }
       }
     }
@@ -408,16 +391,11 @@ export async function GET(request) {
         ...product,
         revenue: money(product.revenue),
         discounts: money(product.discounts),
-        profitInstant: product.instantCount
-          ? money(product.profitInstant)
-          : null,
-        profitSource: product.sourceCount
-          ? money(product.profitSource)
-          : null,
+        operatingMargin: money(product.operatingMargin),
       }))
       .sort((a, b) => b.unitsSold - a.unitsSold);
 
-    // Stock alerts use the Product.pieces structure.
+    // 9. Stock alerts.
     const products = await Product.find({})
       .select("name sku active pieces")
       .lean();
@@ -437,16 +415,16 @@ export async function GET(request) {
         sku: product.sku || "—",
         active: product.active !== false,
         stockCount: inStock.length,
-        stockWeight: round2(
+        stockWeight: round3(
           inStock.reduce(
-            (sum, piece) => sum + toNumber(piece.weight),
+            (sum, piece) => sum + num(piece.weight),
             0
           )
         ),
         inStockPieces: inStock.map((piece) => ({
           pieceId: String(piece._id),
           batchId: piece.batchId || "",
-          weight: toNumber(piece.weight),
+          weight: num(piece.weight),
         })),
       };
     });
@@ -465,6 +443,7 @@ export async function GET(request) {
         product.active && product.stockCount === 0
     );
 
+    // 10. Payment breakdown.
     const paymentMap = new Map();
 
     for (const bill of bills) {
@@ -484,7 +463,7 @@ export async function GET(request) {
 
         paymentMap.set(
           method,
-          (paymentMap.get(method) || 0) + toNumber(line.amount)
+          (paymentMap.get(method) || 0) + num(line.amount)
         );
       }
     }
@@ -496,6 +475,7 @@ export async function GET(request) {
       }))
       .sort((a, b) => b.amount - a.amount);
 
+    // 11. Salesperson report.
     const salespersonMap = new Map();
 
     for (const bill of bills) {
@@ -506,23 +486,19 @@ export async function GET(request) {
           name,
           bills: 0,
           netSales: 0,
-          profitInstant: 0,
-          profitSource: 0,
+          operatingMargin: 0,
+          billsWithMissingProfit: 0,
         });
       }
 
       const row = salespersonMap.get(name);
       row.bills += 1;
-      row.netSales += toNumber(bill.netAmount);
+      row.netSales += num(bill.netAmount);
 
-      for (const item of bill.items) {
-        if (item.pricing.profitInstant != null) {
-          row.profitInstant += item.pricing.profitInstant;
-        }
-
-        if (item.pricing.profitSource != null) {
-          row.profitSource += item.pricing.profitSource;
-        }
+      if (bill.operatingMargin !== null) {
+        row.operatingMargin += bill.operatingMargin;
+      } else {
+        row.billsWithMissingProfit += 1;
       }
     }
 
@@ -530,19 +506,52 @@ export async function GET(request) {
       .map((row) => ({
         ...row,
         netSales: money(row.netSales),
-        profitInstant: money(row.profitInstant),
-        profitSource: money(row.profitSource),
+        operatingMargin: money(row.operatingMargin),
       }))
       .sort((a, b) => b.netSales - a.netSales);
 
     return NextResponse.json({
       success: true,
-      dateRange: { from, to },
-      summary: finalizeTotals(summary),
+      dateRange: {
+        from,
+        to,
+      },
+
+      summary: {
+        ...finalizeTotals(summary),
+        operatingMargin,
+        confirmedSilverAdjustment,
+        expenses,
+        realProfit,
+        silverSoldGrams: round3(summary.totalWeight),
+        matchedGramsInPeriod,
+        unmatchedSoldGrams,
+        profitDataComplete: summary.itemsMissingProfit === 0,
+        profitDataWarning:
+          summary.itemsMissingProfit > 0
+            ? `${summary.itemsMissingProfit} sold item(s) have no saved sale-time profit snapshot. Their profit is excluded rather than guessed.`
+            : null,
+      },
+
+      silver: {
+        soldGramsInPeriod: round3(summary.totalWeight),
+        matchedGramsInPeriod,
+        unmatchedSoldGrams,
+        confirmedAdjustment: confirmedSilverAdjustment,
+        matchCount: confirmedMatches.length,
+      },
+
+      expenses: {
+        total: expenses,
+        count: expenseRows.length,
+        rows: expenseRows,
+      },
+
       daily,
       monthly,
       bills,
       bestSellers,
+
       stock: {
         onePieceLeft,
         lowStock,
@@ -553,8 +562,15 @@ export async function GET(request) {
           0
         ),
       },
+
       paymentBreakdown,
       salespersons,
+
+      profitFormula:
+        "Real profit = operating margin + confirmed silver adjustment - operating expenses.",
+
+      note:
+        "Management dashboard view. Historical profit uses sale-time snapshots only. Silver adjustments are counted on match date. Unmatched silver is shown as an outstanding quantity, not confirmed profit. GST is not separately calculated in this dashboard.",
     });
   } catch (error) {
     console.error("Admin reports error:", error);

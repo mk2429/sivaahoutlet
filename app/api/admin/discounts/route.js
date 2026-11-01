@@ -14,7 +14,9 @@ function validateDiscount(body) {
   const type = body.type;
   const value = Number(body.value);
   const applicability = body.applicability || "all";
-
+if (body.description && String(body.description).length > 500) {
+  return "Description cannot exceed 500 characters.";
+}
   if (!name) return "Discount name is required.";
 
   if (!["percentage", "flat"].includes(type)) {
@@ -77,6 +79,7 @@ function normalizeDiscount(body) {
     name: String(body.name).trim(),
     type: body.type,
     value: Number(body.value),
+    description: String(body.description || "").trim(),
     applicability: body.applicability || "all",
     categories: (body.categories || [])
       .map((item) => String(item).trim())

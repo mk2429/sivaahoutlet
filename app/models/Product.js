@@ -3,46 +3,33 @@ import mongoose from "mongoose";
 
 const PieceSchema = new mongoose.Schema(
   {
-    weight: {
-      type: Number,
-      required: true,
-      min: 0.001,
-    },
+    weight: { type: Number, required: true, min: 0.001 },
     status: {
       type: String,
-      enum: ["inStock", "sold"],
+      enum: ["inStock", "sold", "returned", "damaged", "lost"],
       default: "inStock",
+      index: true,
     },
-    receivedAt: {
-      type: Date,
-      default: Date.now,
-    },
-    batchId: {
-      type: String,
-      default: "",
-    },
+    receivedAt: { type: Date, default: Date.now },
+    batchId: { type: String, default: "" },
+
+    // Actual cost assigned to this specific physical piece.
+    actualAcquisitionCost: { type: Number, default: null, min: 0 },
+    calculatedSourceCost: { type: Number, default: null, min: 0 },
+    acquisitionSilverRate: { type: Number, default: null, min: 0 },
+    acquisitionLabourPerGram: { type: Number, default: null, min: 0 },
+    acquisitionDate: { type: Date, default: null },
+    supplier: { type: String, default: "" },
+    purchaseReference: { type: String, default: "" },
   },
   { timestamps: true }
 );
 
 const ProductSchema = new mongoose.Schema(
   {
-    erpProductId: {
-      type: String,
-      default: null,
-      index: true,
-    },
-    sku: {
-      type: String,
-      required: true,
-      unique: true,
-      trim: true,
-    },
-    name: {
-      type: String,
-      required: true,
-      trim: true,
-    },
+    erpProductId: { type: String, default: null, index: true },
+    sku: { type: String, required: true, unique: true, trim: true },
+    name: { type: String, required: true, trim: true },
     slug: { type: String, default: "" },
     category: { type: String, default: "" },
     subtitle: { type: String, default: "" },
@@ -51,33 +38,11 @@ const ProductSchema = new mongoose.Schema(
     material: { type: String, default: "" },
     mrp: { type: Number, default: 0, min: 0 },
     grams: { type: Number, default: 0, min: 0 },
-
-    // Actual physical pieces in the outlet
-    pieces: {
-      type: [PieceSchema],
-      default: [],
-    },
-
-    // Maintained for quick inventory summaries
-    stockQuantity: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-    lowStockAlert: {
-      type: Number,
-      default: 2,
-      min: 0,
-    },
-    active: {
-      type: Boolean,
-      default: true,
-    },
-    lastSyncedAt: {
-      type: Date,
-      default: null,
-    },
+    pieces: { type: [PieceSchema], default: [] },
+    stockQuantity: { type: Number, default: 0, min: 0 },
+    lowStockAlert: { type: Number, default: 2, min: 0 },
+    active: { type: Boolean, default: true },
+    lastSyncedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

@@ -2,7 +2,7 @@
 "use client";
 
 import { Suspense } from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { useParams } from "next/navigation";
 import "./invoice.css";
 
@@ -25,12 +25,90 @@ const dateText = (value) =>
 
 function InvoiceContent() {
   const { id } = useParams();
-
+const invoiceRef = useRef(null);
+const [sharingPdf, setSharingPdf] = useState(false);
   const [sale, setSale] = useState(null);
   const [seller, setSeller] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+async function shareInvoicePDF() {
+  if (!invoiceRef.current || !sale) return;
 
+  try {
+    setSharingPdf(true);
+
+    const html2pdf = (await import("html2pdf.js")).default;
+
+    const options = {
+      margin: [10, 10, 10, 10],
+      filename: `${sale.billNumber || "Sivaah-Invoice"}.pdf`,
+      image: { type: "jpeg", quality: 0.98 },
+      html2canvas: {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: "#ffffff",
+        scrollY: 0,
+      },
+      jsPDF: {
+        unit: "mm",
+        format: "a4",
+        orientation: "portrait",
+      },
+      pagebreak: {
+        mode: ["css", "legacy"],
+        avoid: [
+          ".inv-header",
+          ".inv-parties",
+          ".inv-lower",
+          ".inv-footer",
+        ],
+      },
+    };
+
+    const pdfBlob = await html2pdf()
+      .set(options)
+      .from(invoiceRef.current)
+      .outputPdf("blob");
+
+    const file = new File(
+      [pdfBlob],
+      `${sale.billNumber || "Sivaah-Invoice"}.pdf`,
+      { type: "application/pdf" }
+    );
+
+    if (
+      navigator.share &&
+      navigator.canShare &&
+      navigator.canShare({ files: [file] })
+    ) {
+      await navigator.share({
+        files: [file],
+        title: "Sivaah Invoice",
+        text: "Thank you for shopping with Sivaah ❤️",
+      });
+    } else {
+      const url = URL.createObjectURL(pdfBlob);
+      const link = document.createElement("a");
+
+      link.href = url;
+      link.download = file.name;
+      link.click();
+
+      URL.revokeObjectURL(url);
+
+      alert(
+        "PDF downloaded. Please attach it manually in WhatsApp."
+      );
+    }
+  } catch (error) {
+    if (error.name !== "AbortError") {
+      console.error("Invoice sharing failed:", error);
+      alert("Could not share invoice. Please try again.");
+    }
+  } finally {
+    setSharingPdf(false);
+  }
+}
   const loadInvoice = useCallback(async () => {
     if (!id) return;
 
@@ -166,7 +244,13 @@ function sendWhatsApp() {
         <button className="inv-whatsapp" onClick={sendWhatsApp}>
           Send Summary on WhatsApp
         </button>
-
+<button
+  className="inv-share-pdf"
+  onClick={shareInvoicePDF}
+  disabled={sharingPdf}
+>
+  {sharingPdf ? "Preparing PDF..." : "Share Invoice PDF"}
+</button>
         <button
           className="inv-back"
           onClick={() => (window.location.href = "/sale")}
@@ -175,7 +259,7 @@ function sendWhatsApp() {
         </button>
       </div>
 
-      <article className="inv-paper">
+      <article className="inv-paper" ref={invoiceRef}>
         <header className="inv-header">
           <div className="inv-brand">
             <img

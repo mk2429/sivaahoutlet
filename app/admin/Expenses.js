@@ -158,7 +158,10 @@ export default function Expenses() {
       }
 
       setData(result);
-    } catch (err) {
+        } catch (err) {
+      // Never display figures from the previous date range
+      // when the latest request has failed.
+      setData(null);
       setError(err.message || "Unable to load accounting data");
     } finally {
       setLoading(false);
@@ -194,40 +197,61 @@ export default function Expenses() {
     });
   };
 
-  const saveTransaction = async (event) => {
-    event.preventDefault();
-    setSaving(true);
-    setError("");
-    setMessage("");
+  
+const saveTransaction = async (event) => {
+  event.preventDefault();
 
-    try {
-      const response = await fetch("/api/admin/expenses", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...form,
-          amount: Number(form.amount),
-          transactionDate: new Date(
-            `${form.transactionDate}T12:00:00`
-          ).toISOString(),
-        }),
-      });
+  if (saving) return;
 
-      const result = await response.json();
-      if (!response.ok || !result.success) {
-        throw new Error(result.message || "Unable to save transaction");
-      }
+  setSaving(true);
+  setError("");
+  setMessage("");
 
-      setMessage("Transaction recorded successfully.");
-      setForm(initialForm());
-      await loadData();
-    } catch (err) {
-      setError(err.message || "Unable to save transaction");
-    } finally {
-      setSaving(false);
+  try {
+    // Keep the same key if this exact submission is retried.
+    const idempotencyKey = crypto.randomUUID();
+
+    const payload = {
+      ...form,
+      amount: Number(form.amount),
+      transactionDate: new Date(
+        `${form.transactionDate}T12:00:00`
+      ).toISOString(),
+      idempotencyKey,
+    };
+
+    const response = await fetch("/api/admin/expenses", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(
+        result.message || "Unable to save transaction"
+      );
     }
-  };
+
+    setMessage(
+      result.duplicate
+        ? "This transaction was already recorded."
+        : "Transaction recorded successfully."
+    );
+
+    setForm(initialForm());
+    await loadData();
+  } catch (err) {
+    setError(err.message || "Unable to save transaction");
+  } finally {
+    setSaving(false);
+  }
+};
+
 
   const voidTransaction = async (transaction) => {
     const reason = window.prompt(

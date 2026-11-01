@@ -1,4 +1,3 @@
-// app/models/Sale.js
 
 import mongoose from "mongoose";
 
@@ -30,35 +29,70 @@ const SaleItemSchema = new mongoose.Schema(
     category: { type: String, default: "" },
     batchId: { type: String, default: "" },
     hsnCode: { type: String, default: "7113" },
+
     weight: { type: Number, required: true, min: 0 },
     listPrice: { type: Number, required: true, min: 0 },
     discountAmount: { type: Number, default: 0, min: 0 },
     finalPrice: { type: Number, required: true, min: 0 },
+
+    // Existing cost information
+    actualAcquisitionCost: { type: Number, default: null, min: 0 },
+    calculatedSourceCost: { type: Number, default: null, min: 0 },
+    replacementCostAtSale: { type: Number, default: null, min: 0 },
+
+    // Permanent sale-time snapshots
+    packagingCostAtSale: { type: Number, default: 0, min: 0 },
+    costAtSale: { type: Number, default: null, min: 0 },
+    profitAtSale: { type: Number, default: null },
+
+    // Cumulative confirmed silver replacement adjustment
+    // Positive = gain, negative = loss
+    silverReplacementAdjustment: {
+      type: Number,
+      default: 0,
+    },
+
+    // Original profit + cumulative silver adjustment
+    actualProfitAfterReplenishment: {
+      type: Number,
+      default: null,
+    },
   },
   { _id: false }
 );
 
 const SaleSchema = new mongoose.Schema(
   {
+    billNumber: {
+      type: String,
+      required: true,
+      unique: true,
+    },
 
-    billNumber: { type: String, required: true, unique: true },
-      silverRateAtSale: {
+    silverRateAtSale: {
       type: Number,
       required: true,
       min: 0,
     },
+
     customerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Customer",
       default: null,
     },
+
     customerSnapshot: {
       name: { type: String, default: "Walk-in Customer" },
       whatsappNumber: { type: String, default: "" },
       address: { type: String, default: "" },
       gstin: { type: String, default: "" },
     },
-    items: { type: [SaleItemSchema], required: true },
+
+    items: {
+      type: [SaleItemSchema],
+      required: true,
+    },
+
     discount: {
       discountId: {
         type: mongoose.Schema.Types.ObjectId,
@@ -69,9 +103,25 @@ const SaleSchema = new mongoose.Schema(
       type: { type: String, default: "" },
       value: { type: Number, default: 0 },
     },
+
     grossAmount: { type: Number, required: true, min: 0 },
     discountAmount: { type: Number, default: 0, min: 0 },
     netAmount: { type: Number, required: true, min: 0 },
+
+    // Bill-level totals: derived from individual pieces
+    totalCostAtSale: { type: Number, default: 0, min: 0 },
+    profitAtSale: { type: Number, default: 0 },
+
+    silverReplacementAdjustment: {
+      type: Number,
+      default: 0,
+    },
+
+    actualProfitAfterReplenishment: {
+      type: Number,
+      default: 0,
+    },
+
     taxSnapshot: {
       rate: { type: Number, default: 3 },
       taxableValue: { type: Number, default: 0 },
@@ -82,22 +132,23 @@ const SaleSchema = new mongoose.Schema(
       inclusive: { type: Boolean, default: true },
       placeOfSupplyStateCode: { type: String, default: "09" },
     },
+
     amountPaid: { type: Number, default: 0, min: 0 },
     balance: { type: Number, default: 0, min: 0 },
+
     paymentMethod: {
       type: String,
-      enum: [
-        "Cash",
-        "UPI",
-        "Card",
-        "Bank Transfer",
-        "Other",
-        "Split",
-      ],
+      enum: ["Cash", "UPI", "Card", "Bank Transfer", "Other", "Split"],
       default: "Cash",
     },
-    paymentSummary: { type: [PaymentLineSchema], default: [] },
+
+    paymentSummary: {
+      type: [PaymentLineSchema],
+      default: [],
+    },
+
     salespersonName: { type: String, default: "" },
+
     status: {
       type: String,
       enum: ["completed", "cancelled"],

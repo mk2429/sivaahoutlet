@@ -1,7 +1,9 @@
+
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
 import "./discounts.css";
+
 const emptyForm = {
   name: "",
   type: "percentage",
@@ -14,6 +16,7 @@ const emptyForm = {
   startDate: "",
   endDate: "",
   active: true,
+  description: "",
 };
 
 const money = (value) =>
@@ -25,6 +28,7 @@ const money = (value) =>
 
 function toDateInput(value) {
   if (!value) return "";
+
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
 
@@ -40,6 +44,7 @@ function fromDiscount(discount) {
     ...emptyForm,
     name: discount.name || "",
     type: discount.type || "percentage",
+    description: discount.description || "",
     value: String(discount.value ?? ""),
     applicability: discount.applicability || "all",
     categoriesText: (discount.categories || []).join(", "),
@@ -57,6 +62,7 @@ function toPayload(form, id) {
     ...(id ? { _id: id } : {}),
     name: form.name.trim(),
     type: form.type,
+    description: form.description.trim(),
     value: Number(form.value),
     applicability: form.applicability,
     categories: form.categoriesText
@@ -94,6 +100,7 @@ export default function Discounts() {
       const response = await fetch("/api/admin/discounts", {
         cache: "no-store",
       });
+
       const data = await response.json();
 
       if (!response.ok) {
@@ -139,6 +146,7 @@ export default function Discounts() {
 
   async function handleSubmit(event) {
     event.preventDefault();
+
     setSaving(true);
     setError("");
     setMessage("");
@@ -174,7 +182,11 @@ export default function Discounts() {
     setMessage("");
 
     try {
-      const payload = toPayload(fromDiscount(discount), discount._id);
+      const payload = toPayload(
+        fromDiscount(discount),
+        discount._id
+      );
+
       payload.active = !discount.active;
 
       const response = await fetch("/api/admin/discounts", {
@@ -204,6 +216,7 @@ export default function Discounts() {
       discount.name,
       discount.type,
       discount.applicability,
+      discount.description || "",
       ...(discount.categories || []),
       ...(discount.skus || []),
     ]
@@ -217,11 +230,15 @@ export default function Discounts() {
     <section className="module-page">
       <div className="eyebrow">ADMINISTRATION</div>
       <h2>Discounts</h2>
+
       <p className="page-description">
         Create and manage the offers available at your outlet.
       </p>
 
-      <div className="module-card" style={{ marginBottom: 20 }}>
+      <div
+        className="module-card"
+        style={{ marginBottom: 20 }}
+      >
         <div
           style={{
             display: "flex",
@@ -239,20 +256,31 @@ export default function Discounts() {
             </p>
           </div>
 
-          <button className="primary-button" onClick={startCreate}>
+          <button
+            className="primary-button"
+            onClick={startCreate}
+          >
             + Create Discount
           </button>
         </div>
       </div>
 
       {error && (
-        <div role="alert" className="module-card" style={{ color: "#b42318" }}>
+        <div
+          role="alert"
+          className="module-card"
+          style={{ color: "#b42318" }}
+        >
           {error}
         </div>
       )}
 
       {message && (
-        <div role="status" className="module-card" style={{ color: "#067647" }}>
+        <div
+          role="status"
+          className="module-card"
+          style={{ color: "#067647" }}
+        >
           {message}
         </div>
       )}
@@ -263,11 +291,36 @@ export default function Discounts() {
           onSubmit={handleSubmit}
           style={{ marginBottom: 20 }}
         >
-          <h3>{editingId ? "Edit Discount" : "Create Discount"}</h3>
+          <h3>
+            {editingId ? "Edit Discount" : "Create Discount"}
+          </h3>
+
+          <p className="discount-form-description">
+            Add a short description explaining what this discount
+            offer is about.
+          </p>
 
           <div className="discount-form-grid">
+            <label className="discount-field discount-wide">
+              Discount Description
+
+              <textarea
+                name="description"
+                value={form.description}
+                onChange={updateField}
+                placeholder="e.g. Celebrate Diwali with special savings on selected 925 Sterling Silver jewellery."
+                rows={3}
+                maxLength={500}
+              />
+
+              <small>
+                {form.description.length}/500 characters
+              </small>
+            </label>
+
             <label className="discount-field">
               Discount Name *
+
               <input
                 name="name"
                 value={form.name}
@@ -280,24 +333,35 @@ export default function Discounts() {
 
             <label className="discount-field">
               Discount Type *
+
               <select
                 name="type"
                 value={form.type}
                 onChange={updateField}
                 required
               >
-                <option value="percentage">Percentage (%)</option>
-                <option value="flat">Flat Amount (₹)</option>
+                <option value="percentage">
+                  Percentage (%)
+                </option>
+
+                <option value="flat">
+                  Flat Amount (₹)
+                </option>
               </select>
             </label>
 
             <label className="discount-field">
               Discount Value *
+
               <input
                 name="value"
                 type="number"
                 min="0.01"
-                max={form.type === "percentage" ? "100" : undefined}
+                max={
+                  form.type === "percentage"
+                    ? "100"
+                    : undefined
+                }
                 step="0.01"
                 value={form.value}
                 onChange={updateField}
@@ -307,13 +371,16 @@ export default function Discounts() {
 
             <label className="discount-field">
               Applicable To *
+
               <select
                 name="applicability"
                 value={form.applicability}
                 onChange={updateField}
               >
                 <option value="all">All Products</option>
-                <option value="category">Selected Categories</option>
+                <option value="category">
+                  Selected Categories
+                </option>
                 <option value="sku">Specific SKUs</option>
               </select>
             </label>
@@ -321,6 +388,7 @@ export default function Discounts() {
             {form.applicability === "category" && (
               <label className="discount-field discount-wide">
                 Categories * (comma-separated)
+
                 <input
                   name="categoriesText"
                   value={form.categoriesText}
@@ -334,6 +402,7 @@ export default function Discounts() {
             {form.applicability === "sku" && (
               <label className="discount-field discount-wide">
                 SKUs * (comma-separated)
+
                 <input
                   name="skusText"
                   value={form.skusText}
@@ -346,6 +415,7 @@ export default function Discounts() {
 
             <label className="discount-field">
               Minimum Bill Amount (₹)
+
               <input
                 name="minBillAmount"
                 type="number"
@@ -358,6 +428,7 @@ export default function Discounts() {
 
             <label className="discount-field">
               Minimum Weight (g)
+
               <input
                 name="minWeightGrams"
                 type="number"
@@ -370,6 +441,7 @@ export default function Discounts() {
 
             <label className="discount-field">
               Start Date (optional)
+
               <input
                 name="startDate"
                 type="date"
@@ -380,6 +452,7 @@ export default function Discounts() {
 
             <label className="discount-field">
               End Date (optional)
+
               <input
                 name="endDate"
                 type="date"
@@ -403,6 +476,7 @@ export default function Discounts() {
               checked={form.active}
               onChange={updateField}
             />
+
             Discount is active
           </label>
 
@@ -443,11 +517,15 @@ export default function Discounts() {
       )}
 
       <div className="module-card">
-        <label className="discount-field" style={{ marginBottom: 18 }}>
+        <label
+          className="discount-field"
+          style={{ marginBottom: 18 }}
+        >
           Search Discounts
+
           <input
             type="search"
-            placeholder="Search by name, category or SKU..."
+            placeholder="Search by name, description, category or SKU..."
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
@@ -456,7 +534,9 @@ export default function Discounts() {
         {loading ? (
           <p>Loading discounts...</p>
         ) : filteredDiscounts.length === 0 ? (
-          <p>No discounts found. Create your first discount above.</p>
+          <p>
+            No discounts found. Create your first discount above.
+          </p>
         ) : (
           <div style={{ display: "grid", gap: 12 }}>
             {filteredDiscounts.map((discount) => (
@@ -483,18 +563,29 @@ export default function Discounts() {
                     }}
                   >
                     <strong>{discount.name}</strong>
+
                     <span
                       style={{
                         fontSize: 12,
                         padding: "4px 8px",
                         borderRadius: 20,
-                        background: discount.active ? "#e7f6ec" : "#f1f1f1",
-                        color: discount.active ? "#17663a" : "#555",
+                        background: discount.active
+                          ? "#e7f6ec"
+                          : "#f1f1f1",
+                        color: discount.active
+                          ? "#17663a"
+                          : "#555",
                       }}
                     >
                       {discount.active ? "Active" : "Inactive"}
                     </span>
                   </div>
+
+                  {discount.description && (
+                    <p className="discount-description">
+                      {discount.description}
+                    </p>
+                  )}
 
                   <p style={{ margin: "8px 0" }}>
                     {discount.type === "percentage"
@@ -508,26 +599,49 @@ export default function Discounts() {
                         : `SKUs: ${(discount.skus || []).join(", ")}`}
                   </p>
 
-                  <p style={{ fontSize: 13, color: "#666", margin: 0 }}>
+                  <p
+                    style={{
+                      fontSize: 13,
+                      color: "#666",
+                      margin: 0,
+                    }}
+                  >
                     Min. bill: {money(discount.minBillAmount)}
                     {" · "}
                     Min. weight: {discount.minWeightGrams || 0} g
                   </p>
 
                   {(discount.startDate || discount.endDate) && (
-                    <p style={{ fontSize: 13, color: "#666", marginBottom: 0 }}>
-                      Valid: {discount.startDate
-                        ? new Date(discount.startDate).toLocaleDateString("en-IN")
+                    <p
+                      style={{
+                        fontSize: 13,
+                        color: "#666",
+                        marginBottom: 0,
+                      }}
+                    >
+                      Valid:{" "}
+                      {discount.startDate
+                        ? new Date(
+                            discount.startDate
+                          ).toLocaleDateString("en-IN")
                         : "No start date"}
                       {" – "}
                       {discount.endDate
-                        ? new Date(discount.endDate).toLocaleDateString("en-IN")
+                        ? new Date(
+                            discount.endDate
+                          ).toLocaleDateString("en-IN")
                         : "No end date"}
                     </p>
                   )}
                 </div>
 
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    flexWrap: "wrap",
+                  }}
+                >
                   <button
                     className="secondary-button"
                     onClick={() => startEdit(discount)}
@@ -539,7 +653,9 @@ export default function Discounts() {
                     className="secondary-button"
                     onClick={() => toggleStatus(discount)}
                   >
-                    {discount.active ? "Deactivate" : "Activate"}
+                    {discount.active
+                      ? "Deactivate"
+                      : "Activate"}
                   </button>
                 </div>
               </article>

@@ -58,7 +58,9 @@ function getMatchingOffers(product, weight, sp, discounts) {
       const criteria = [];
 
       if (discount.applicability === "sku") {
-        criteria.push(`Applicable to SKU: ${(discount.skus || []).join(", ")}`);
+        criteria.push(
+          `Applicable to SKU: ${(discount.skus || []).join(", ")}`
+        );
       } else if (discount.applicability === "category") {
         criteria.push(
           `Applicable to category: ${(discount.categories || []).join(", ")}`
@@ -94,6 +96,10 @@ function getMatchingOffers(product, weight, sp, discounts) {
       return {
         id: String(discount._id),
         name: discount.name,
+
+        // Added: send discount description to OutletDashboard
+        description: discount.description || "",
+
         type: discount.type,
         value: Number(discount.value),
         price,
@@ -129,7 +135,8 @@ export async function GET() {
       return NextResponse.json(
         {
           success: false,
-          message: "Current silver rate is missing. Update it in Silver Rate Settings first.",
+          message:
+            "Current silver rate is missing. Update it in Silver Rate Settings first.",
         },
         { status: 400 }
       );
@@ -144,7 +151,10 @@ export async function GET() {
     ]);
 
     const now = new Date();
-    const discounts = rawDiscounts.filter((item) => isValidNow(item, now));
+    const discounts = rawDiscounts.filter((item) =>
+      isValidNow(item, now)
+    );
+
     const inventory = [];
 
     for (const product of products) {
@@ -187,7 +197,9 @@ export async function GET() {
           discountOffers: offers,
 
           // Retain compatibility with the current dashboard while migrating.
-          discount: offers.find((offer) => !offer.requiresBillCheck) || null,
+          discount:
+            offers.find((offer) => !offer.requiresBillCheck) || null,
+
           spAfterDiscount:
             offers.find((offer) => !offer.requiresBillCheck)?.price ?? null,
 
