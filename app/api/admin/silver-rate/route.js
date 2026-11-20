@@ -11,13 +11,6 @@ async function isAdmin() {
 
 export async function GET() {
   try {
-    if (!(await isAdmin())) {
-      return NextResponse.json(
-        { success: false, message: "Unauthorized" },
-        { status: 401 }
-      );
-    }
-
     await connectDB();
 
     const rate = await SilverRate.findOne({ metal: "silver" }).lean();

@@ -10,7 +10,13 @@ const money = (value) =>
     currency: "INR",
     maximumFractionDigits: 0,
   });
-
+const silverRateMoney = (value) =>
+  Number(value || 0).toLocaleString("en-IN", {
+    style: "currency",
+    currency: "INR",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 async function fetchJson(url) {
   const response = await fetch(url, { cache: "no-store" });
   const data = await response.json().catch(() => ({}));
@@ -33,7 +39,44 @@ export default function OutletDashboard() {
   const [loadingCollections, setLoadingCollections] = useState(false);
   const [error, setError] = useState("");
   const [today, setToday] = useState("");
+  const [silverRate, setSilverRate] = useState(null);
+  const [loadingSilverRate, setLoadingSilverRate] = useState(true);
+  const [showPriceBreakup, setShowPriceBreakup] = useState(false);
+  const loadSilverRate = async () => {
+    try {
+      setLoadingSilverRate(true);
 
+      const data = await fetchJson("/api/admin/silver-rate");
+
+      if (!data.success || !data.rate) {
+        throw new Error("Silver rate unavailable");
+      }
+
+      const inclusiveRate = Number(data.rate.ratePerGram);
+
+      if (!Number.isFinite(inclusiveRate) || inclusiveRate <= 0) {
+        throw new Error("Invalid silver rate");
+      }
+
+      // API rate includes 3% GST.
+      // Convert it back to the rate before GST.
+      const rateWithoutGST = inclusiveRate / 1.03;
+
+      setSilverRate({
+        inclusive: inclusiveRate,
+        withoutGST: rateWithoutGST,
+        updatedAt: data.rate.updatedAt,
+      });
+    } catch (error) {
+      console.error("Silver rate load error:", error);
+      setSilverRate(null);
+    } finally {
+      setLoadingSilverRate(false);
+    }
+  };
+  useEffect(() => {
+    loadSilverRate();
+  }, []);
   useEffect(() => {
     setToday(
       new Date().toLocaleDateString("en-IN", {
@@ -82,94 +125,94 @@ export default function OutletDashboard() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [selectedProduct]);
 
- async function loadCollections() {
-  // Open the tab immediately so the browser doesn't block it.
-  const whatsappWindow = window.open("about:blank", "_blank");
+  async function loadCollections() {
+    // Open the tab immediately so the browser doesn't block it.
+    const whatsappWindow = window.open("about:blank", "_blank");
 
-  setLoadingCollections(true);
-  setError("");
+    setLoadingCollections(true);
+    setError("");
 
-  try {
-    const data = await fetchJson("/api/outlet/daily-collections");
+    try {
+      const data = await fetchJson("/api/outlet/daily-collections");
 
-    if (!data.success || !data.report) {
-      throw new Error("The collections report is unavailable.");
+      if (!data.success || !data.report) {
+        throw new Error("The collections report is unavailable.");
+      }
+
+      const report = data.report;
+      setCollections(report);
+
+      if (!whatsappWindow) {
+        throw new Error(
+          "WhatsApp tab was blocked. Allow pop-ups and try again."
+        );
+      }
+
+      const message = buildWhatsAppMessage(report);
+
+      whatsappWindow.location.href =
+        `https://wa.me/?text=${encodeURIComponent(message)}`;
+
+    } catch (err) {
+      if (whatsappWindow && !whatsappWindow.closed) {
+        whatsappWindow.close();
+      }
+
+      setError(err.message);
+    } finally {
+      setLoadingCollections(false);
     }
+  }
+  function buildWhatsAppMessage(report) {
+    const lines = [
+      "SIVAAH | DAILY COLLECTION REPORT",
+      `Date: ${report.date}`,
+      "",
+      "SALES SUMMARY",
+      `Bills: ${report.billCount}`,
+      `Gross sales: ${money(report.grossSales)}`,
+      `Discounts: ${money(report.discounts)}`,
+      `Net sales: ${money(report.netSales)}`,
+      "",
+      "PAYMENT COLLECTIONS",
+      `Cash received: ${money(report.cash)}`,
+      `UPI received: ${money(report.upi)}`,
+      `Card: ${money(report.card)}`,
+      `Bank transfer: ${money(report.bankTransfer)}`,
+      `Other: ${money(report.otherPayments)}`,
+      `Total collected: ${money(report.totalCollected)}`,
+      `Outstanding: ${money(report.outstanding)}`,
+      "",
+      "PRODUCTS SOLD",
+      ...(report.bills || []).map((bill) =>
+        `${bill.billNumber} | ${bill.time} | ${bill.customerName} | ${bill.paymentSummary} | Bill: ${money(bill.netAmount)} | Paid: ${money(bill.amountPaid)}`
+      ),
+      "",
+      "EXPENSES",
+      `Total expenses: ${money(report.expenses)}`,
+      `Net cash movement: ${money(report.netCashMovement)}`,
+      "",
+      "Generated from Sivaah Outlet System",
+    ];
 
-    const report = data.report;
-    setCollections(report);
+    return lines.join("\n");
+  }
 
-    if (!whatsappWindow) {
-      throw new Error(
-        "WhatsApp tab was blocked. Allow pop-ups and try again."
-      );
-    }
+  function sendWhatsAppReport() {
+    if (!collections) return;
 
-    const message = buildWhatsAppMessage(report);
+    const message = buildWhatsAppMessage(collections);
 
-    whatsappWindow.location.href =
+    // Open the report first so you can copy it.
+    const whatsappUrl =
       `https://wa.me/?text=${encodeURIComponent(message)}`;
 
-  } catch (err) {
-    if (whatsappWindow && !whatsappWindow.closed) {
-      whatsappWindow.close();
-    }
-
-    setError(err.message);
-  } finally {
-    setLoadingCollections(false);
+    window.open(
+      whatsappUrl,
+      "_blank",
+      "noopener,noreferrer"
+    );
   }
-}
-function buildWhatsAppMessage(report) {
-  const lines = [
-    "SIVAAH | DAILY COLLECTION REPORT",
-    `Date: ${report.date}`,
-    "",
-    "SALES SUMMARY",
-    `Bills: ${report.billCount}`,
-    `Gross sales: ${money(report.grossSales)}`,
-    `Discounts: ${money(report.discounts)}`,
-    `Net sales: ${money(report.netSales)}`,
-    "",
-    "PAYMENT COLLECTIONS",
-    `Cash received: ${money(report.cash)}`,
-    `UPI received: ${money(report.upi)}`,
-    `Card: ${money(report.card)}`,
-    `Bank transfer: ${money(report.bankTransfer)}`,
-    `Other: ${money(report.otherPayments)}`,
-    `Total collected: ${money(report.totalCollected)}`,
-    `Outstanding: ${money(report.outstanding)}`,
-    "",
-    "PRODUCTS SOLD",
-    ...(report.bills || []).map((bill) =>
-      `${bill.billNumber} | ${bill.time} | ${bill.customerName} | ${bill.paymentSummary} | Bill: ${money(bill.netAmount)} | Paid: ${money(bill.amountPaid)}`
-    ),
-    "",
-    "EXPENSES",
-    `Total expenses: ${money(report.expenses)}`,
-    `Net cash movement: ${money(report.netCashMovement)}`,
-    "",
-    "Generated from Sivaah Outlet System",
-  ];
-
-  return lines.join("\n");
-}
-  
-function sendWhatsAppReport() {
-  if (!collections) return;
-
-  const message = buildWhatsAppMessage(collections);
-
-  // Open the report first so you can copy it.
-  const whatsappUrl =
-    `https://wa.me/?text=${encodeURIComponent(message)}`;
-
-  window.open(
-    whatsappUrl,
-    "_blank",
-    "noopener,noreferrer"
-  );
-}
 
 
   const categories = useMemo(
@@ -215,7 +258,7 @@ function sendWhatsAppReport() {
   return (
     <main className="outlet-page">
       <header className="outlet-header">
-        
+
         <nav className="header-actions">
           <CustomerManager />
 
@@ -235,6 +278,45 @@ function sendWhatsAppReport() {
       </header>
 
       <section className="inventory-section">
+        <div className="silver-rate-card">
+          <div className="silver-rate-main">
+            <span className="silver-rate-label">TODAY'S SILVER RATE</span>
+
+            <div className="silver-rate-value">
+              {loadingSilverRate ? (
+                "Loading..."
+              ) : silverRate ? (
+                <>
+                  {money(silverRate.withoutGST)}
+                  <span>/ g</span>
+                </>
+              ) : (
+                "Unavailable"
+              )}
+            </div>
+
+            <p className="silver-rate-note">
+              925 Silver · Rate excluding 3% GST
+            </p>
+          </div>
+
+          <div className="silver-rate-meta">
+            <span>GST-inclusive API rate</span>
+
+            <strong>
+              {silverRate ? `${money(silverRate.inclusive)} / g` : "—"}
+            </strong>
+
+            {silverRate?.updatedAt && (
+              <small>
+                Updated {new Date(silverRate.updatedAt).toLocaleTimeString("en-IN", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </small>
+            )}
+          </div>
+        </div>
         <div className="inventory-heading">
           <div>
             <p className="eyebrow">OUTLET INVENTORY</p>
@@ -348,7 +430,10 @@ function sendWhatsAppReport() {
                   <button
                     type="button"
                     className="rates-button "
-                    onClick={() => setSelectedProduct(product)}
+                    onClick={() => {
+  setShowPriceBreakup(false);
+  setSelectedProduct(product);
+}}
                   >
                     Check Rates
                     <span>&amp; Discounts</span>
@@ -397,18 +482,99 @@ function sendWhatsAppReport() {
               <button
                 className="modal-close"
                 type="button"
-                onClick={() => setSelectedProduct(null)}
+                onClick={() => {
+  setShowPriceBreakup(false);
+  setSelectedProduct(null);
+}}
                 aria-label="Close rates popup"
               >
                 ×
               </button>
             </header>
 
-            <div className="modal-standard-price">
-              <span>Standard selling price</span>
-              <strong>{money(selectedProduct.sp)}</strong>
-              <small>Weight: {selectedProduct.weight} g</small>
-            </div>
+          <div className="modal-standard-price">
+  <span>Standard selling price</span>
+
+  <strong>{money(selectedProduct.sp)}</strong>
+
+  <small>Weight: {selectedProduct.weight} g</small>
+
+  {silverRate && (
+    <div className="price-breakup-wrapper">
+      <button
+        type="button"
+        className="price-breakup-toggle"
+        onClick={() => setShowPriceBreakup((prev) => !prev)}
+      >
+        <span>
+          {showPriceBreakup
+            ? "Hide full breakdown"
+            : "View full breakdown"}
+        </span>
+
+        <span
+          className={`price-breakup-arrow ${
+            showPriceBreakup ? "open" : ""
+          }`}
+        >
+          ↓
+        </span>
+      </button>
+
+      {showPriceBreakup && (
+        <div className="price-breakup">
+          {(() => {
+            const sellingPrice = Number(selectedProduct.sp);
+            const weight = Number(selectedProduct.weight);
+
+            const silverRateExcludingGST =
+              Number(silverRate.inclusive) / 1.03;
+
+            const gst = sellingPrice * 0.03;
+
+            const calculatedSilverValue =
+              weight * silverRateExcludingGST;
+
+            const craftsmanshipAndPlating = Math.max(
+              0,
+              Math.floor(
+                sellingPrice -
+                  calculatedSilverValue -
+                  gst
+              )
+            );
+
+            const silverValue =
+              sellingPrice -
+              craftsmanshipAndPlating -
+              gst;
+
+            return (
+              <div className="price-breakup-table">
+                <div className="price-breakup-item">
+                  <span>Silver Value</span>
+                  <strong>{money(silverValue)}</strong>
+                </div>
+
+                <div className="price-breakup-item">
+                  <span>Craftsmanship &amp; Plating</span>
+                  <strong>
+                    {money(craftsmanshipAndPlating)}
+                  </strong>
+                </div>
+
+                <div className="price-breakup-item">
+                  <span>GST</span>
+                  <strong>{money(gst)}</strong>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+    </div>
+  )}
+</div>
 
             <div className="rates-modal-body">
               <h3>Available offers</h3>
@@ -421,28 +587,28 @@ function sendWhatsAppReport() {
               ) : (
                 selectedOffers.map((offer) => (
                   <article className="offer-card" key={offer.id}>
-                   <div className="offer-card-heading">
-  <div>
-    <strong>{offer.name}</strong>
+                    <div className="offer-card-heading">
+                      <div>
+                        <strong>{offer.name}</strong>
 
-    <span>
-      {offer.type === "percentage"
-        ? `${offer.value}% off`
-        : `${money(offer.value)} off`}
-    </span>
+                        <span>
+                          {offer.type === "percentage"
+                            ? `${offer.value}% off`
+                            : `${money(offer.value)} off`}
+                        </span>
 
-    {offer.description && (
-      <p className="offer-description">
-        {offer.description}
-      </p>
-    )}
-  </div>
+                        {offer.description && (
+                          <p className="offer-description">
+                            {offer.description}
+                          </p>
+                        )}
+                      </div>
 
-  <div className="offer-card-price">
-    <strong>{money(offer.price)}</strong>
-    <small>Indicative price</small>
-  </div>
-</div>
+                      <div className="offer-card-price">
+                        <strong>{money(offer.price)}</strong>
+                        <small>Indicative price</small>
+                      </div>
+                    </div>
 
                     <div className="offer-savings">
                       Potential saving: {money(offer.amountOff)}
