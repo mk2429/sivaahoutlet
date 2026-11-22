@@ -1,4 +1,3 @@
-
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import mongoose from "mongoose";
@@ -68,8 +67,6 @@ function getRate(value, fallback, label, batchId) {
   return rate;
 }
 
-// Money Ledger uses two balance accounts.
-// Payment method is retained separately on every transaction.
 function getAccount(method) {
   return method === "Cash" ? "Cash" : "Bank";
 }
@@ -108,7 +105,6 @@ export async function POST(request) {
       );
     }
 
-    // Purchase-level details.
     const supplierName = String(
       purchase.supplierName || ""
     ).trim().slice(0, 150);
@@ -134,12 +130,10 @@ export async function POST(request) {
     ).trim().slice(0, 1000);
 
     const gstPaise = moneyToPaise(purchase.gst, "GST");
-
     const transportPaise = moneyToPaise(
       purchase.transport,
       "Transport cost"
     );
-
     const otherChargesPaise = moneyToPaise(
       purchase.otherCharges,
       "Other charges"
@@ -205,28 +199,44 @@ export async function POST(request) {
 
     await connectDB();
 
-    // Fetch ERP catalogue once for all products.
-    const response = await fetch(ERP_URL, {
-      cache: "no-store",
+    // Check MongoDB first so custom AYO- products don't require an external ERP fetch
+    const existingLocalDocs = await Product.find({
+      erpProductId: { $in: Array.from(productIds) },
+    }).lean();
+
+    const localByErpId = new Map(
+      existingLocalDocs.map((doc) => [String(doc.erpProductId), doc])
+    );
+
+    const needsErpFetch = inputProducts.some((group) => {
+      const localDoc = localByErpId.get(String(group.erpProductId).trim());
+      return !(localDoc && String(localDoc.sku || "").startsWith("AYO-"));
     });
 
-    if (!response.ok) {
-      throw new Error("Could not verify ERP product catalogue.");
+    let catalogue = [];
+
+    if (needsErpFetch) {
+      const response = await fetch(ERP_URL, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(15000),
+      });
+
+      if (!response.ok) {
+        throw new Error("Could not verify ERP product catalogue.");
+      }
+
+      const data = await response.json();
+
+      catalogue = Array.isArray(data)
+        ? data
+        : data.products || data.data || [];
+
+      if (!Array.isArray(catalogue)) {
+        throw new Error("Invalid ERP catalogue response.");
+      }
     }
 
-    const data = await response.json();
-
-    const catalogue = Array.isArray(data)
-      ? data
-      : data.products || data.data || [];
-
-    if (!Array.isArray(catalogue)) {
-      throw new Error("Invalid ERP catalogue response.");
-    }
-
-    // Prepare all product groups.
     const receivedAt = new Date();
-
     const purchaseDate = validDate(
       purchase.purchaseDate,
       receivedAt
@@ -235,38 +245,60 @@ export async function POST(request) {
     const preparedGroups = [];
 
     for (const group of inputProducts) {
-      const erpProductId = String(
-        group.erpProductId
-      ).trim();
-
-      const source = catalogue.find(
-        (item) => String(item._id) === erpProductId
+      const erpProductId = String(group.erpProductId).trim();
+      const localCustomDoc = localByErpId.get(erpProductId);
+      const isCustomProduct = Boolean(
+        localCustomDoc && String(localCustomDoc.sku || "").startsWith("AYO-")
       );
 
-      if (!source) {
-        return errorResponse(
-          `ERP product not found: ${erpProductId}`,
-          404
+      let sku;
+      let source;
+      let erpBatchIds = null;
+
+      if (isCustomProduct) {
+        sku = localCustomDoc.sku;
+        source = {
+          name: localCustomDoc.name || "",
+          slug: localCustomDoc.slug || "",
+          category: localCustomDoc.category || "",
+          subtitle: localCustomDoc.subtitle || "",
+          images: localCustomDoc.images?.length
+            ? localCustomDoc.images
+            : localCustomDoc.image
+            ? [localCustomDoc.image]
+            : [],
+          material: localCustomDoc.material || "925 Silver",
+          mrp: Number(localCustomDoc.mrp || 0),
+          grams: Number(localCustomDoc.grams || 0),
+          isActive: localCustomDoc.active !== false,
+        };
+      } else {
+        source = catalogue.find(
+          (item) => String(item._id) === erpProductId
+        );
+
+        if (!source) {
+          return errorResponse(
+            `ERP product not found: ${erpProductId}`,
+            404
+          );
+        }
+
+        sku = source.sku_id || `ERP-${source._id}`;
+
+        erpBatchIds = new Set(
+          (Array.isArray(source.batchids) ? source.batchids : [])
+            .map((batch) => String(batch?.batchid || "").trim())
+            .filter((id) => decodeBatchId(id))
         );
       }
-
-      const sku = source.sku_id || `ERP-${source._id}`;
-
-      const erpBatchIds = new Set(
-        (Array.isArray(source.batchids)
-          ? source.batchids
-          : []
-        )
-          .map((batch) =>
-            String(batch?.batchid || "").trim()
-          )
-          .filter((id) => decodeBatchId(id))
-      );
 
       const preparedPieces = group.pieces.map((input) => {
         const batchId = String(input.batchId).trim();
 
-        if (!erpBatchIds.has(batchId)) {
+        // For ERP products, enforce that batchId exists in ERP;
+        // For custom AYO- products, any valid 14-digit batchId is allowed.
+        if (!isCustomProduct && !erpBatchIds.has(batchId)) {
           throw new Error(
             `Invalid batch ${batchId} for ${source.name || sku}.`
           );
@@ -306,8 +338,7 @@ export async function POST(request) {
           silverCostPaise,
           labourCostPaise,
           allocatedExtraCostPaise: 0,
-          acquisitionCostPaise:
-            silverCostPaise + labourCostPaise,
+          acquisitionCostPaise: silverCostPaise + labourCostPaise,
         };
       });
 
@@ -315,6 +346,7 @@ export async function POST(request) {
         erpProductId,
         sku,
         source,
+        isCustomProduct,
         pieces: preparedPieces,
       });
     }
@@ -355,9 +387,7 @@ export async function POST(request) {
 
       allocatedSoFar += allocatedExtraCostPaise;
 
-      piece.allocatedExtraCostPaise =
-        allocatedExtraCostPaise;
-
+      piece.allocatedExtraCostPaise = allocatedExtraCostPaise;
       piece.acquisitionCostPaise =
         piece.silverCostPaise +
         piece.labourCostPaise +
@@ -365,35 +395,33 @@ export async function POST(request) {
     });
 
     const totalCostPaise =
-      silverCostPaise +
-      labourCostPaise +
-      totalExtraPaise;
+      silverCostPaise + labourCostPaise + totalExtraPaise;
 
     // Validate and prepare payment split.
     const rawPayments = Array.isArray(purchase.payments)
       ? purchase.payments
       : [];
 
-    const payments = rawPayments.map((payment) => {
-      const method = String(
-        payment.method || ""
-      ).trim();
+    const payments = rawPayments
+      .map((payment) => {
+        const method = String(payment.method || "").trim();
 
-      if (!PAYMENT_METHODS.includes(method)) {
-        throw new Error(`Invalid payment method: ${method}`);
-      }
+        if (!PAYMENT_METHODS.includes(method)) {
+          throw new Error(`Invalid payment method: ${method}`);
+        }
 
-      const amountPaise = moneyToPaise(
-        payment.amount,
-        "Payment amount"
-      );
+        const amountPaise = moneyToPaise(
+          payment.amount,
+          "Payment amount"
+        );
 
-      return {
-        method,
-        account: getAccount(method),
-        amountPaise,
-      };
-    }).filter((payment) => payment.amountPaise > 0);
+        return {
+          method,
+          account: getAccount(method),
+          amountPaise,
+        };
+      })
+      .filter((payment) => payment.amountPaise > 0);
 
     const amountPaidPaise = payments.reduce(
       (sum, payment) => sum + payment.amountPaise,
@@ -406,9 +434,7 @@ export async function POST(request) {
       );
     }
 
-    const outstandingPaise =
-      totalCostPaise - amountPaidPaise;
-
+    const outstandingPaise = totalCostPaise - amountPaidPaise;
     const purchaseNumber = `PUR-${randomUUID()}`;
 
     session = await mongoose.startSession();
@@ -420,15 +446,11 @@ export async function POST(request) {
       const purchaseProducts = [];
       const ledgerEntries = [];
 
-      // Process every product.
       for (const group of preparedGroups) {
         const { erpProductId, sku, source } = group;
 
         let product = await Product.findOne({
-          $or: [
-            { erpProductId },
-            { sku },
-          ],
+          $or: [{ erpProductId }, { sku }],
         }).session(session);
 
         if (
@@ -482,13 +504,10 @@ export async function POST(request) {
             status: "inStock",
             receivedAt,
             acquisitionDate: purchaseDate,
-            acquisitionSilverRate:
-              item.acquisitionSilverRate,
-            acquisitionLabourPerGram:
-              item.acquisitionLabourPerGram,
+            acquisitionSilverRate: item.acquisitionSilverRate,
+            acquisitionLabourPerGram: item.acquisitionLabourPerGram,
             supplier: supplierName,
-            purchaseReference:
-              invoiceNumber || purchaseNumber,
+            purchaseReference: invoiceNumber || purchaseNumber,
             actualAcquisitionCost: paiseToRupees(
               item.acquisitionCostPaise
             ),
@@ -503,7 +522,6 @@ export async function POST(request) {
 
         await product.save({ session });
 
-        // Build product section for purchase record.
         const productSilverCost = group.pieces.reduce(
           (sum, item) => sum + item.silverCostPaise,
           0
@@ -515,37 +533,28 @@ export async function POST(request) {
         );
 
         const productExtraCost = group.pieces.reduce(
-          (sum, item) =>
-            sum + item.allocatedExtraCostPaise,
+          (sum, item) => sum + item.allocatedExtraCostPaise,
           0
         );
 
         const productTotalCost =
-          productSilverCost +
-          productLabourCost +
-          productExtraCost;
+          productSilverCost + productLabourCost + productExtraCost;
 
-        const purchaseItems = createdPieces.map(
-          (piece, index) => {
-            const item = group.pieces[index];
+        const purchaseItems = createdPieces.map((piece, index) => {
+          const item = group.pieces[index];
 
-            return {
-              pieceId: piece._id,
-              weight: item.weight,
-              batchId: item.batchId,
-              silverRatePerGram:
-                item.acquisitionSilverRate,
-              labourPerGram:
-                item.acquisitionLabourPerGram,
-              silverCostPaise: item.silverCostPaise,
-              labourCostPaise: item.labourCostPaise,
-              allocatedExtraCostPaise:
-                item.allocatedExtraCostPaise,
-              acquisitionCostPaise:
-                item.acquisitionCostPaise,
-            };
-          }
-        );
+          return {
+            pieceId: piece._id,
+            weight: item.weight,
+            batchId: item.batchId,
+            silverRatePerGram: item.acquisitionSilverRate,
+            labourPerGram: item.acquisitionLabourPerGram,
+            silverCostPaise: item.silverCostPaise,
+            labourCostPaise: item.labourCostPaise,
+            allocatedExtraCostPaise: item.allocatedExtraCostPaise,
+            acquisitionCostPaise: item.acquisitionCostPaise,
+          };
+        });
 
         purchaseProducts.push({
           productId: product._id,
@@ -562,7 +571,6 @@ export async function POST(request) {
           totalCostPaise: productTotalCost,
         });
 
-        // Jewellery ledger entry for each physical piece.
         createdPieces.forEach((piece) => {
           ledgerEntries.push({
             entryDate: purchaseDate,
@@ -574,12 +582,9 @@ export async function POST(request) {
             productName: product.name,
             batchId: piece.batchId,
             weight: piece.weight,
-            sourceSilverRate:
-              piece.acquisitionSilverRate,
-            labourPerGram:
-              piece.acquisitionLabourPerGram,
-            actualAcquisitionCost:
-              piece.actualAcquisitionCost,
+            sourceSilverRate: piece.acquisitionSilverRate,
+            labourPerGram: piece.acquisitionLabourPerGram,
+            actualAcquisitionCost: piece.actualAcquisitionCost,
             reason: "Stock received",
             reference: invoiceNumber || purchaseNumber,
           });
@@ -595,18 +600,13 @@ export async function POST(request) {
             pieceId: String(piece._id),
             weight: piece.weight,
             batchId: piece.batchId,
-            acquisitionSilverRate:
-              piece.acquisitionSilverRate,
-            acquisitionLabourPerGram:
-              piece.acquisitionLabourPerGram,
-            actualAcquisitionCost:
-              piece.actualAcquisitionCost,
+            acquisitionSilverRate: piece.acquisitionSilverRate,
+            acquisitionLabourPerGram: piece.acquisitionLabourPerGram,
+            actualAcquisitionCost: piece.actualAcquisitionCost,
           })),
         });
       }
 
-      // Create the purchase first so its ID can be linked
-      // to every initial payment transaction.
       const [createdPurchase] = await OutletPurchase.create(
         [
           {
@@ -621,13 +621,9 @@ export async function POST(request) {
             totalPieces: allPieces.length,
             totalWeightGrams: totalWeight,
             averageSilverRatePerGram:
-              totalWeight > 0
-                ? silverCostPaise / 100 / totalWeight
-                : 0,
+              totalWeight > 0 ? silverCostPaise / 100 / totalWeight : 0,
             averageLabourPerGram:
-              totalWeight > 0
-                ? labourCostPaise / 100 / totalWeight
-                : 0,
+              totalWeight > 0 ? labourCostPaise / 100 / totalWeight : 0,
             silverCostPaise,
             labourCostPaise,
             gstPaise,
@@ -652,50 +648,34 @@ export async function POST(request) {
         throw new Error("Could not create purchase record.");
       }
 
-      // Save all stock ledger entries.
       if (ledgerEntries.length > 0) {
-        await JewelleryLedger.insertMany(
-          ledgerEntries,
-          { session }
-        );
+        await JewelleryLedger.insertMany(ledgerEntries, { session });
       }
 
-      // Record only money actually paid.
-      // Every transaction is linked to its purchase.
       if (payments.length > 0) {
-        const transactions = payments.map(
-          (payment, index) => ({
-            transactionDate: purchaseDate,
-            type: "inventory_purchase",
-            amount: paiseToRupees(payment.amountPaise),
-            amountPaise: payment.amountPaise,
+        const transactions = payments.map((payment, index) => ({
+          transactionDate: purchaseDate,
+          type: "inventory_purchase",
+          amount: paiseToRupees(payment.amountPaise),
+          amountPaise: payment.amountPaise,
+          idempotencyKey: `${purchaseNumber}-${index + 1}`,
+          purchaseId: createdPurchase._id,
+          category: "Stock Purchase",
+          description: `Stock purchase ${purchaseNumber} - ${purchaseProducts.length} products`,
+          person: "Supplier",
+          paymentMethod: payment.method,
+          account: payment.account,
+          direction: "out",
+          profitTreatment: "inventory",
+          reference: invoiceNumber || purchaseNumber,
+          createdBy: "admin",
+        }));
 
-            idempotencyKey:
-              `${purchaseNumber}-${index + 1}`,
-
-            purchaseId: createdPurchase._id,
-
-            category: "Stock Purchase",
-            description:
-              `Stock purchase ${purchaseNumber} - ${purchaseProducts.length} products`,
-            person: "Supplier",
-            paymentMethod: payment.method,
-            account: payment.account,
-            direction: "out",
-            profitTreatment: "inventory",
-            reference: invoiceNumber || purchaseNumber,
-            createdBy: "admin",
-          })
+        const createdTransactions = await OutletTransaction.insertMany(
+          transactions,
+          { session }
         );
 
-        const createdTransactions =
-          await OutletTransaction.insertMany(
-            transactions,
-            { session }
-          );
-
-        // Save the corresponding transaction ID against
-        // each payment in the purchase record.
         if (createdTransactions.length !== payments.length) {
           throw new Error(
             "Purchase payment transactions could not be linked."
@@ -703,8 +683,7 @@ export async function POST(request) {
         }
 
         createdTransactions.forEach((transaction, index) => {
-          createdPurchase.payments[index].transactionId =
-            transaction._id;
+          createdPurchase.payments[index].transactionId = transaction._id;
         });
 
         await createdPurchase.save({ session });
@@ -735,7 +714,6 @@ export async function POST(request) {
       message: "Purchase and all product stocks recorded successfully.",
       ...result,
     });
-
   } catch (error) {
     console.error("Multi-product stock purchase error:", error);
 
@@ -757,7 +735,6 @@ export async function POST(request) {
       error.message || "Could not record purchase.",
       500
     );
-
   } finally {
     if (session) {
       await session.endSession();

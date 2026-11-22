@@ -54,25 +54,35 @@ export async function GET() {
       );
     }
 
-    const response = await fetch(ERP_URL, { cache: "no-store" });
-
-    if (!response.ok) {
-      throw new Error("ERP catalogue request failed");
-    }
-
-    const data = await response.json();
-
-    const catalogue = Array.isArray(data)
-      ? data
-      : data.products || data.data || [];
-
-    if (!Array.isArray(catalogue)) {
-      throw new Error("Invalid ERP catalogue response");
-    }
-
     await connectDB();
-
     const localProducts = await Product.find({}).lean();
+
+    // Fetch external ERP catalogue with a 12s timeout so ECONNRESET never blocks local products
+    let catalogue = [];
+    let erpWarning = "";
+
+    try {
+      const response = await fetch(ERP_URL, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(12000),
+      });
+
+      if (!response.ok) {
+        throw new Error("ERP catalogue request failed");
+      }
+
+      const data = await response.json();
+      catalogue = Array.isArray(data)
+        ? data
+        : data.products || data.data || [];
+
+      if (!Array.isArray(catalogue)) {
+        catalogue = [];
+      }
+    } catch (erpErr) {
+      console.error("ERP catalogue fetch warning:", erpErr);
+      erpWarning = "ERP server unreachable; showing local & custom products.";
+    }
 
     const byId = new Map(
       localProducts
@@ -84,10 +94,14 @@ export async function GET() {
       localProducts.map((product) => [product.sku, product])
     );
 
-    const products = catalogue.map((source) => {
-      const erpProductId = String(source._id);
-      const sku = source.sku_id || `ERP-${source._id}`;
+    const seenErpIds = new Set();
 
+    // 1. Map ERP products
+    const erpProducts = catalogue.map((source) => {
+      const erpProductId = String(source._id);
+      seenErpIds.add(erpProductId);
+
+      const sku = source.sku_id || `ERP-${source._id}`;
       const local = byId.get(erpProductId) || bySku.get(sku);
 
       const availablePieces = (local?.pieces || []).filter(
@@ -98,7 +112,6 @@ export async function GET() {
         ? source.batchids
         : [];
 
-      // Only expose valid, uniquely identified ERP batches.
       const seenBatchIds = new Set();
 
       const batchids = rawBatches
@@ -126,9 +139,7 @@ export async function GET() {
           source.grams != null && Number.isFinite(Number(source.grams))
             ? Number(source.grams)
             : null,
-
         batchids,
-
         alreadyAdded: Boolean(local),
         currentStock: availablePieces.length,
         currentWeights: availablePieces.map((piece) => ({
@@ -139,13 +150,61 @@ export async function GET() {
       };
     });
 
-    return NextResponse.json({ success: true, products });
+    // 2. Include local-only / custom AYO- products (plus any synced products if ERP timed out)
+    const customAndLocalOnlyProducts = localProducts
+      .filter((local) => !seenErpIds.has(String(local.erpProductId)))
+      .map((local) => {
+        const availablePieces = (local.pieces || []).filter(
+          (piece) => piece.status === "inStock"
+        );
+
+        // Expose any previously used batchIds on this local product as selectable options too
+        const seenBatchIds = new Set();
+        const batchids = (local.pieces || [])
+          .map((p) => {
+            const decoded = decodeBatchId(p?.batchId);
+            if (!decoded || seenBatchIds.has(decoded.batchId)) return null;
+            seenBatchIds.add(decoded.batchId);
+            return decoded;
+          })
+          .filter(Boolean);
+
+        return {
+          erpProductId: String(local.erpProductId || local._id),
+          sku: local.sku,
+          name: local.name || "",
+          category: local.category || "",
+          image: local.image || local.images?.[0] || "",
+          mrp: Number(local.mrp || 0),
+          grams:
+            local.grams != null && Number.isFinite(Number(local.grams))
+              ? Number(local.grams)
+              : null,
+          isCustom: Boolean(local.sku?.startsWith("AYO-")),
+          batchids,
+          alreadyAdded: true,
+          currentStock: availablePieces.length,
+          currentWeights: availablePieces.map((piece) => ({
+            pieceId: String(piece._id),
+            weight: piece.weight,
+            batchId: piece.batchId || "",
+          })),
+        };
+      });
+
+    const products = [...customAndLocalOnlyProducts, ...erpProducts];
+
+    return NextResponse.json({
+      success: true,
+      products,
+      warning: erpWarning || undefined,
+    });
   } catch (error) {
     console.error("Catalogue fetch error:", error);
 
     return NextResponse.json(
-      { success: false, message: "Could not fetch ERP products" },
-      { status: 502 }
+      { success: false, message: "Could not fetch products" },
+      { status: 500 }
     );
   }
 }

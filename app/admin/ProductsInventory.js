@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -7,6 +6,79 @@ const today = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
+
+// Builds a valid 14-digit batchId (DDMMYYYY + 3-digit silver + 3-digit labour)
+// so lib/pricing.js decodeBatchId() works seamlessly for non-ERP products
+const buildManualBatchId = (dateStr, silverRate, labourRate) => {
+  const d = dateStr ? new Date(dateStr) : new Date();
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yyyy = String(d.getFullYear());
+  const s = String(
+    Math.min(999, Math.max(1, Math.round(Number(silverRate) || 0)))
+  ).padStart(3, "0");
+  const l = String(
+    Math.min(999, Math.max(0, Math.round(Number(labourRate) || 0)))
+  ).padStart(3, "0");
+  return `${dd}${mm}${yyyy}${s}${l}`;
+};
+
+const IGNORED_SKU_WORDS = new Set([
+  "925",
+  "sterling",
+  "silver",
+  "pure",
+  "hallmarked",
+  "with",
+  "for",
+  "and",
+  "the",
+  "of",
+  "in",
+  "a",
+  "an",
+]);
+
+function previewSku(category, name, existingProducts = []) {
+  const catCode = String(category || "")
+    .replace(/[^a-zA-Z]/g, "")
+    .slice(0, 3)
+    .toUpperCase();
+
+  const words = String(name || "")
+    .replace(/[^a-zA-Z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w && !IGNORED_SKU_WORDS.has(w.toLowerCase()));
+
+  const initials = words
+    .slice(0, 4)
+    .map((w) => w[0].toUpperCase())
+    .join("");
+
+  if (!catCode || !initials) return "AYO-XXX-XXX-1";
+
+  const base = `AYO-${catCode.padEnd(3, "X")}-${initials}`;
+  let maxNum = 0;
+  existingProducts.forEach((p) => {
+    if (p.sku && p.sku.toUpperCase().startsWith(`${base}-`)) {
+      const n = Number(p.sku.split("-").pop());
+      if (Number.isFinite(n) && n > maxNum) maxNum = n;
+    }
+  });
+
+  return `${base}-${maxNum + 1}`;
+}
+
+const emptyNewProduct = () => ({
+  name: "",
+  category: "",
+  subtitle: "",
+  material: "925 Silver",
+  grams: "",
+  mrp: "",
+  lowStockAlert: "2",
+  image: "",
+});
 
 const emptyPurchase = () => ({
   purchaseDate: today(),
@@ -41,6 +113,19 @@ const labelClass = "block text-sm font-medium text-gray-700";
 
 const paymentMethods = ["Cash", "UPI", "Bank Transfer", "Card", "Other"];
 
+const commonCategories = [
+  "Pendants",
+  "Rings",
+  "Earrings",
+  "Chains",
+  "Bracelets",
+  "Anklets",
+  "Necklaces",
+  "Bangles",
+  "Toe Rings",
+  "Coins & Idols",
+];
+
 export default function ProductsInventory() {
   const [products, setProducts] = useState([]);
   const [selectedProducts, setSelectedProducts] = useState([]);
@@ -48,14 +133,19 @@ export default function ProductsInventory() {
   const [productToAdd, setProductToAdd] = useState("");
 
   const [purchase, setPurchase] = useState(emptyPurchase());
-  const [payments, setPayments] = useState([
-    { method: "Cash", amount: "" },
-  ]);
+  const [payments, setPayments] = useState([{ method: "Cash", amount: "" }]);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+
+  // Popup modal state for non-website products
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [newProductForm, setNewProductForm] = useState(emptyNewProduct());
+  const [creatingProduct, setCreatingProduct] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [modalError, setModalError] = useState("");
 
   const loadProducts = useCallback(async () => {
     setLoading(true);
@@ -75,9 +165,7 @@ export default function ProductsInventory() {
       setProducts(
         (data.products || []).map((product) => ({
           ...product,
-          batchids: Array.isArray(product.batchids)
-            ? product.batchids
-            : [],
+          batchids: Array.isArray(product.batchids) ? product.batchids : [],
           currentWeights: Array.isArray(product.currentWeights)
             ? product.currentWeights
             : [],
@@ -94,29 +182,150 @@ export default function ProductsInventory() {
     loadProducts();
   }, [loadProducts]);
 
- const filteredProducts = useMemo(() => {
-  const query = productSearch.trim().toLowerCase();
+  const generatedSkuPreview = useMemo(
+    () => previewSku(newProductForm.category, newProductForm.name, products),
+    [newProductForm.category, newProductForm.name, products]
+  );
 
-  return products.filter((product) => {
-    const alreadySelected = selectedProducts.some(
-      (item) =>
-        String(item.product.erpProductId) ===
-        String(product.erpProductId)
-    );
+async function handleImageUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-    const searchableText = [
-      product.name,
-      product.sku,
-      product.category,
-      product.erpProductId,
-    ]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase();
+    setUploadingImage(true);
+    setModalError("");
 
-    return !alreadySelected && searchableText.includes(query);
-  });
-}, [products, productSearch, selectedProducts]);
+    try {
+      // 1. Get short-lived signed parameters from our Next.js backend
+      const sigRes = await fetch("/api/admin/upload", {
+        method: "POST",
+      });
+      const sigData = await sigRes.json();
+
+      if (!sigRes.ok || !sigData.success) {
+        throw new Error(sigData.message || "Could not get upload signature.");
+      }
+
+      // 2. Upload directly from the browser to Cloudinary
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("api_key", sigData.apiKey);
+      formData.append("timestamp", String(sigData.timestamp));
+      formData.append("folder", sigData.folder);
+      formData.append("signature", sigData.signature);
+
+      const uploadRes = await fetch(
+        `https://api.cloudinary.com/v1_1/${sigData.cloudName}/image/upload`,
+        {
+          method: "POST",
+          body: formData,
+        }
+      );
+
+      const uploadData = await uploadRes.json();
+
+      if (!uploadRes.ok || !uploadData.secure_url) {
+        throw new Error(
+          uploadData.error?.message || "Cloudinary image upload failed."
+        );
+      }
+
+      setNewProductForm((prev) => ({ ...prev, image: uploadData.secure_url }));
+    } catch (err) {
+      setModalError(
+        err.message ||
+          "Image upload failed. You can also paste an image URL below."
+      );
+    } finally {
+      setUploadingImage(false);
+    }
+  }
+
+  async function handleCreateProduct(e) {
+    e.preventDefault();
+    if (creatingProduct || uploadingImage) return;
+
+    setModalError("");
+
+    if (!newProductForm.name.trim()) {
+      setModalError("Product name is required.");
+      return;
+    }
+    if (!newProductForm.category.trim()) {
+      setModalError("Category is required.");
+      return;
+    }
+
+    setCreatingProduct(true);
+
+    try {
+      const response = await fetch("/api/admin/products/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...newProductForm,
+          grams: Number(newProductForm.grams) || 0,
+          mrp: Number(newProductForm.mrp) || 0,
+          lowStockAlert: Number(newProductForm.lowStockAlert) || 2,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Could not create product.");
+      }
+
+      const created = {
+        ...data.product,
+        batchids: Array.isArray(data.product.batchids)
+          ? data.product.batchids
+          : [],
+        currentWeights: [],
+      };
+
+      setProducts((prev) => [created, ...prev]);
+      setSelectedProducts((prev) => [
+        ...prev,
+        {
+          product: created,
+          pieces: [emptyPiece()],
+        },
+      ]);
+
+      setMessage(
+        `Product "${created.name}" created (SKU: ${created.sku}) and added below.`
+      );
+      setNewProductForm(emptyNewProduct());
+      setShowCreateModal(false);
+    } catch (err) {
+      setModalError(err.message || "Failed to create product.");
+    } finally {
+      setCreatingProduct(false);
+    }
+  }
+
+  const filteredProducts = useMemo(() => {
+    const query = productSearch.trim().toLowerCase();
+
+    return products.filter((product) => {
+      const alreadySelected = selectedProducts.some(
+        (item) =>
+          String(item.product.erpProductId) === String(product.erpProductId)
+      );
+
+      const searchableText = [
+        product.name,
+        product.sku,
+        product.category,
+        product.erpProductId,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      return !alreadySelected && searchableText.includes(query);
+    });
+  }, [products, productSearch, selectedProducts]);
 
   const totalPieces = selectedProducts.reduce(
     (sum, group) => sum + group.pieces.length,
@@ -133,13 +342,8 @@ export default function ProductsInventory() {
         const pieceWeight = Number(piece.weight) || 0;
 
         weight += pieceWeight;
-        silver +=
-          pieceWeight *
-          (Number(piece.acquisitionSilverRate) || 0);
-
-        labour +=
-          pieceWeight *
-          (Number(piece.acquisitionLabourPerGram) || 0);
+        silver += pieceWeight * (Number(piece.acquisitionSilverRate) || 0);
+        labour += pieceWeight * (Number(piece.acquisitionLabourPerGram) || 0);
       });
     });
 
@@ -168,44 +372,40 @@ export default function ProductsInventory() {
   }, [selectedProducts, purchase, payments]);
 
   function addProduct(productId) {
-  const product = products.find(
-    (item) =>
-      String(item.erpProductId) === String(productId)
-  );
+    const product = products.find(
+      (item) => String(item.erpProductId) === String(productId)
+    );
 
-  if (!product) {
-    setError("Product not found. Please refresh the catalogue.");
-    return;
+    if (!product) {
+      setError("Product not found. Please refresh the catalogue.");
+      return;
+    }
+
+    const alreadyAdded = selectedProducts.some(
+      (item) =>
+        String(item.product.erpProductId) === String(product.erpProductId)
+    );
+
+    if (alreadyAdded) {
+      setError("This product is already added. Use Add Piece instead.");
+      return;
+    }
+
+    setSelectedProducts((previous) => [
+      ...previous,
+      {
+        product,
+        pieces: [emptyPiece()],
+      },
+    ]);
+
+    setError("");
+    setMessage("");
   }
-
-  const alreadyAdded = selectedProducts.some(
-    (item) =>
-      String(item.product.erpProductId) ===
-      String(product.erpProductId)
-  );
-
-  if (alreadyAdded) {
-    setError("This product is already added. Use Add Piece instead.");
-    return;
-  }
-
-  setSelectedProducts((previous) => [
-    ...previous,
-    {
-      product,
-      pieces: [emptyPiece()],
-    },
-  ]);
-
-  setError("");
-  setMessage("");
-}
 
   function removeProduct(productId) {
     setSelectedProducts((previous) =>
-      previous.filter(
-        (group) => group.product.erpProductId !== productId
-      )
+      previous.filter((group) => group.product.erpProductId !== productId)
     );
   }
 
@@ -231,9 +431,7 @@ export default function ProductsInventory() {
 
         return {
           ...group,
-          pieces: group.pieces.filter(
-            (_, pieceIndex) => pieceIndex !== index
-          ),
+          pieces: group.pieces.filter((_, pieceIndex) => pieceIndex !== index),
         };
       })
     );
@@ -248,6 +446,9 @@ export default function ProductsInventory() {
 
         const pieces = [...group.pieces];
         const piece = { ...pieces[index] };
+        const isCustomNonErp =
+          group.product.sku?.startsWith("AYO-") ||
+          group.product.batchids.length === 0;
 
         if (field === "batchId") {
           const batch = group.product.batchids.find(
@@ -263,6 +464,29 @@ export default function ProductsInventory() {
             : "";
         } else {
           piece[field] = value;
+
+          if (
+            isCustomNonErp &&
+            (field === "acquisitionSilverRate" ||
+              field === "acquisitionLabourPerGram")
+          ) {
+            const sRate =
+              field === "acquisitionSilverRate"
+                ? value
+                : piece.acquisitionSilverRate;
+            const lRate =
+              field === "acquisitionLabourPerGram"
+                ? value
+                : piece.acquisitionLabourPerGram;
+
+            if (sRate !== "" && lRate !== "") {
+              piece.batchId = buildManualBatchId(
+                purchase.purchaseDate,
+                sRate,
+                lRate
+              );
+            }
+          }
         }
 
         pieces[index] = piece;
@@ -293,10 +517,7 @@ export default function ProductsInventory() {
   }
 
   function addPayment() {
-    setPayments((previous) => [
-      ...previous,
-      { method: "UPI", amount: "" },
-    ]);
+    setPayments((previous) => [...previous, { method: "UPI", amount: "" }]);
   }
 
   function removePayment(index) {
@@ -320,6 +541,8 @@ export default function ProductsInventory() {
 
     for (const group of selectedProducts) {
       const product = group.product;
+      const isCustomNonErp =
+        product.sku?.startsWith("AYO-") || product.batchids.length === 0;
 
       if (!group.pieces.length) {
         return `Add at least one piece for ${product.name}.`;
@@ -336,21 +559,19 @@ export default function ProductsInventory() {
         const silver = Number(piece.acquisitionSilverRate);
         const labour = Number(piece.acquisitionLabourPerGram);
 
-        if (
-          piece.weight === "" ||
-          !Number.isFinite(weight) ||
-          weight <= 0
-        ) {
+        if (piece.weight === "" || !Number.isFinite(weight) || weight <= 0) {
           return `Enter a valid weight for ${product.name}, Piece ${index + 1}.`;
         }
 
-        if (
-          !piece.batchId ||
-          !product.batchids.some(
-            (batch) => batch.batchId === piece.batchId
-          )
-        ) {
-          return `Select a valid batch for ${product.name}, Piece ${index + 1}.`;
+        if (!isCustomNonErp) {
+          if (
+            !piece.batchId ||
+            !product.batchids.some((batch) => batch.batchId === piece.batchId)
+          ) {
+            return `Select a valid batch for ${product.name}, Piece ${index + 1}.`;
+          }
+        } else if (!piece.batchId || !/^\d{14}$/.test(piece.batchId)) {
+          return `Enter valid silver & labour rates to generate batch for ${product.name}, Piece ${index + 1}.`;
         }
 
         if (
@@ -379,8 +600,7 @@ export default function ProductsInventory() {
 
     if (
       additionalCosts.some(
-        (value) =>
-          !Number.isFinite(Number(value)) || Number(value) < 0
+        (value) => !Number.isFinite(Number(value)) || Number(value) < 0
       )
     ) {
       return "Please check GST, transport and other charges.";
@@ -421,10 +641,7 @@ export default function ProductsInventory() {
     }
 
     const productSummary = selectedProducts
-      .map(
-        (group) =>
-          `${group.product.name} — ${group.pieces.length} pieces`
-      )
+      .map((group) => `${group.product.name} — ${group.pieces.length} pieces`)
       .join("\n");
 
     const confirmation = window.confirm(
@@ -457,12 +674,8 @@ export default function ProductsInventory() {
           pieces: group.pieces.map((piece) => ({
             weight: Number(piece.weight),
             batchId: piece.batchId,
-            acquisitionSilverRate: Number(
-              piece.acquisitionSilverRate
-            ),
-            acquisitionLabourPerGram: Number(
-              piece.acquisitionLabourPerGram
-            ),
+            acquisitionSilverRate: Number(piece.acquisitionSilverRate),
+            acquisitionLabourPerGram: Number(piece.acquisitionLabourPerGram),
           })),
         })),
 
@@ -521,13 +734,25 @@ export default function ProductsInventory() {
   return (
     <div className="space-y-6">
       {/* HEADER */}
-      <div>
-        <h2 className="text-2xl font-bold">
-          Products & Inventory
-        </h2>
-        <p className="mt-1 text-sm text-gray-500">
-          Create one purchase with multiple products and multiple pieces.
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-bold">Products & Inventory</h2>
+          <p className="mt-1 text-sm text-gray-500">
+            Create one purchase with multiple products and multiple pieces.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => {
+            setModalError("");
+            setNewProductForm(emptyNewProduct());
+            setShowCreateModal(true);
+          }}
+          className="rounded-lg bg-black px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-800"
+        >
+          + Add Custom Product (Non-Website)
+        </button>
       </div>
 
       {/* ALERTS */}
@@ -546,10 +771,8 @@ export default function ProductsInventory() {
       {/* INVENTORY OVERVIEW */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <div className="rounded-xl border bg-white p-4">
-          <p className="text-sm text-gray-500">ERP Products</p>
-          <p className="mt-1 text-2xl font-bold">
-            {products.length}
-          </p>
+          <p className="text-sm text-gray-500">ERP / Catalogue Products</p>
+          <p className="mt-1 text-2xl font-bold">{products.length}</p>
         </div>
 
         <div className="rounded-xl border bg-white p-4">
@@ -563,8 +786,7 @@ export default function ProductsInventory() {
           <p className="text-sm text-gray-500">Available Pieces</p>
           <p className="mt-1 text-2xl font-bold">
             {products.reduce(
-              (sum, product) =>
-                sum + (Number(product.currentStock) || 0),
+              (sum, product) => sum + (Number(product.currentStock) || 0),
               0
             )}
           </p>
@@ -572,92 +794,107 @@ export default function ProductsInventory() {
       </div>
 
       {/* PRODUCT SELECTOR */}
-     {/* PRODUCT SELECTOR */}
-<div className="rounded-xl border bg-white p-4">
-  <h3 className="font-semibold text-lg">Add Products</h3>
+      <div className="rounded-xl border bg-white p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-lg font-semibold">Add Products</h3>
+          <button
+            type="button"
+            onClick={() => {
+              setModalError("");
+              setNewProductForm(emptyNewProduct());
+              setShowCreateModal(true);
+            }}
+            className="rounded-lg border border-black px-3 py-1.5 text-xs font-semibold text-black hover:bg-gray-50"
+          >
+            + New Non-Website Product
+          </button>
+        </div>
 
-  <input
-    value={productSearch}
-    onChange={(e) => setProductSearch(e.target.value)}
-    placeholder="Search by product name, SKU or category..."
-    className={inputClass}
-  />
+        <input
+          value={productSearch}
+          onChange={(e) => setProductSearch(e.target.value)}
+          placeholder="Search by product name, SKU or category..."
+          className={inputClass}
+        />
 
-  <div className="mt-4 space-y-2">
-    {loading ? (
-      <p className="py-4 text-center text-sm text-gray-500">
-        Loading products...
-      </p>
-    ) : filteredProducts.length === 0 ? (
-      <p className="py-4 text-center text-sm text-gray-500">
-        {products.length === 0
-          ? "No products received from catalogue API."
-          : "No matching products found."}
-      </p>
-    ) : (
-      filteredProducts.slice(0, 30).map((product) => (
-        <div
-          key={product.erpProductId}
-          className="flex items-center gap-3 rounded-lg border p-3"
-        >
-          {product.image ? (
-            <img
-              src={product.image}
-              alt={product.name}
-              className="h-14 w-14 rounded-lg border object-contain"
-            />
+        <div className="mt-4 space-y-2">
+          {loading ? (
+            <p className="py-4 text-center text-sm text-gray-500">
+              Loading products...
+            </p>
+          ) : filteredProducts.length === 0 ? (
+            <p className="py-4 text-center text-sm text-gray-500">
+              {products.length === 0
+                ? "No products received from catalogue API."
+                : "No matching products found."}
+            </p>
           ) : (
-            <div className="h-14 w-14 rounded-lg bg-gray-100" />
-          )}
+            filteredProducts.slice(0, 30).map((product) => (
+              <div
+                key={product.erpProductId}
+                className="flex items-center gap-3 rounded-lg border p-3"
+              >
+                {product.image ? (
+                  <img
+                    src={product.image}
+                    alt={product.name}
+                    className="h-14 w-14 rounded-lg border object-contain"
+                  />
+                ) : (
+                  <div className="h-14 w-14 rounded-lg bg-gray-100" />
+                )}
 
-          <div className="min-w-0 flex-1">
-            <p className="font-medium text-sm">
-              {product.name}
-            </p>
-            <p className="text-xs text-gray-500">
-              SKU: {product.sku}
-            </p>
-            <p className="text-xs text-gray-500">
-              {product.batchids?.length || 0} valid batches
-            </p>
-          </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-medium">{product.name}</p>
+                    {product.sku?.startsWith("AYO-") && (
+                      <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
+                        Custom
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-500">SKU: {product.sku}</p>
+                  <p className="text-xs text-gray-500">
+                    {product.sku?.startsWith("AYO-")
+                      ? "Manual batch (auto-generated from rates)"
+                      : `${product.batchids?.length || 0} valid batches`}
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => addProduct(product.erpProductId)}
+                  disabled={saving}
+                  className="rounded-lg bg-black px-3 py-2 text-sm text-white disabled:opacity-50"
+                >
+                  + Add
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="mt-3 flex items-center justify-between">
+          <p className="text-xs text-gray-500">
+            Showing up to 30 matching products.
+          </p>
 
           <button
             type="button"
-            onClick={() => addProduct(product.erpProductId)}
-            disabled={saving}
-            className="rounded-lg bg-black px-3 py-2 text-sm text-white disabled:opacity-50"
+            onClick={loadProducts}
+            disabled={loading || saving}
+            className="rounded-lg border px-3 py-2 text-sm"
           >
-            + Add
+            Refresh Catalogue
           </button>
         </div>
-      ))
-    )}
-  </div>
-
-  <div className="mt-3 flex items-center justify-between">
-    <p className="text-xs text-gray-500">
-      Showing up to 30 matching products.
-    </p>
-
-    <button
-      type="button"
-      onClick={loadProducts}
-      disabled={loading || saving}
-      className="rounded-lg border px-3 py-2 text-sm"
-    >
-      Refresh Catalogue
-    </button>
-  </div>
-</div>
+      </div>
 
       {/* SELECTED PRODUCTS */}
       {selectedProducts.length > 0 && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
-            <h3 className="text-lg font-bold">
-              Products in This Purchase
-            </h3>
+            <h3 className="text-lg font-bold">Products in This Purchase</h3>
             <span className="rounded-full bg-gray-100 px-3 py-1 text-sm font-medium">
               {selectedProducts.length} products · {totalPieces} pieces
             </span>
@@ -667,6 +904,8 @@ export default function ProductsInventory() {
             const product = group.product;
             const productId = product.erpProductId;
             const batches = product.batchids || [];
+            const isCustomNonErp =
+              product.sku?.startsWith("AYO-") || batches.length === 0;
 
             return (
               <div
@@ -688,12 +927,8 @@ export default function ProductsInventory() {
                   )}
 
                   <div className="min-w-0 flex-1">
-                    <h4 className="font-semibold">
-                      {product.name}
-                    </h4>
-                    <p className="text-xs text-gray-500">
-                      SKU: {product.sku}
-                    </p>
+                    <h4 className="font-semibold">{product.name}</h4>
+                    <p className="text-xs text-gray-500">SKU: {product.sku}</p>
                     <p className="text-xs text-gray-500">
                       Category: {product.category || "Not provided"}
                     </p>
@@ -737,7 +972,9 @@ export default function ProductsInventory() {
                         Pieces to Add ({group.pieces.length})
                       </h5>
                       <p className="text-xs text-gray-500">
-                        Enter weight and select the ERP batch for each piece.
+                        {isCustomNonErp
+                          ? "Enter weight, silver rate, and labour rate (Batch ID auto-generates)."
+                          : "Enter weight and select the ERP batch for each piece."}
                       </p>
                     </div>
 
@@ -751,12 +988,6 @@ export default function ProductsInventory() {
                     </button>
                   </div>
 
-                  {batches.length === 0 && (
-                    <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-                      No valid ERP batch IDs found for this product.
-                    </div>
-                  )}
-
                   <div className="mt-3 space-y-3">
                     {group.pieces.map((piece, index) => {
                       const selectedBatch = batches.find(
@@ -769,16 +1000,12 @@ export default function ProductsInventory() {
                           className="rounded-lg border bg-gray-50 p-3"
                         >
                           <div className="mb-3 flex items-center justify-between">
-                            <h6 className="font-medium">
-                              Piece {index + 1}
-                            </h6>
+                            <h6 className="font-medium">Piece {index + 1}</h6>
 
                             {group.pieces.length > 1 && (
                               <button
                                 type="button"
-                                onClick={() =>
-                                  removePiece(productId, index)
-                                }
+                                onClick={() => removePiece(productId, index)}
                                 disabled={saving}
                                 className="text-xs text-red-600"
                               >
@@ -808,31 +1035,45 @@ export default function ProductsInventory() {
                               />
                             </label>
 
-                            <label className={labelClass}>
-                              ERP Batch ID
-                              <select
-                                value={piece.batchId}
-                                onChange={(e) =>
-                                  updatePiece(
-                                    productId,
-                                    index,
-                                    "batchId",
-                                    e.target.value
-                                  )
-                                }
-                                className={inputClass}
-                              >
-                                <option value="">Select batch</option>
-                                {batches.map((batch) => (
-                                  <option
-                                    key={batch.batchId}
-                                    value={batch.batchId}
-                                  >
-                                    {batch.batchId} · {batch.date}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
+                            {isCustomNonErp ? (
+                              <label className={labelClass}>
+                                Auto Batch ID (14-digit)
+                                <input
+                                  type="text"
+                                  readOnly
+                                  value={
+                                    piece.batchId || "Enter rates below..."
+                                  }
+                                  className={`${inputClass} bg-gray-100 text-gray-600`}
+                                />
+                              </label>
+                            ) : (
+                              <label className={labelClass}>
+                                ERP Batch ID
+                                <select
+                                  value={piece.batchId}
+                                  onChange={(e) =>
+                                    updatePiece(
+                                      productId,
+                                      index,
+                                      "batchId",
+                                      e.target.value
+                                    )
+                                  }
+                                  className={inputClass}
+                                >
+                                  <option value="">Select batch</option>
+                                  {batches.map((batch) => (
+                                    <option
+                                      key={batch.batchId}
+                                      value={batch.batchId}
+                                    >
+                                      {batch.batchId} · {batch.date}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            )}
 
                             <label className={labelClass}>
                               Acquisition Silver Rate (₹/g)
@@ -849,6 +1090,7 @@ export default function ProductsInventory() {
                                     e.target.value
                                   )
                                 }
+                                placeholder="e.g. 150"
                                 className={inputClass}
                               />
                             </label>
@@ -868,6 +1110,7 @@ export default function ProductsInventory() {
                                     e.target.value
                                   )
                                 }
+                                placeholder="e.g. 100"
                                 className={inputClass}
                               />
                             </label>
@@ -875,9 +1118,8 @@ export default function ProductsInventory() {
 
                           {selectedBatch && (
                             <p className="mt-2 text-xs text-gray-500">
-                              Batch date: {selectedBatch.date} ·
-                              Historical silver rate: ₹
-                              {selectedBatch.silverRate}/g
+                              Batch date: {selectedBatch.date} · Historical
+                              silver rate: ₹{selectedBatch.silverRate}/g
                             </p>
                           )}
                         </div>
@@ -895,9 +1137,7 @@ export default function ProductsInventory() {
       {selectedProducts.length > 0 && (
         <>
           <div className="rounded-xl border bg-white p-4">
-            <h3 className="text-lg font-bold">
-              Supplier & Invoice Details
-            </h3>
+            <h3 className="text-lg font-bold">Supplier & Invoice Details</h3>
             <p className="mt-1 text-xs text-gray-500">
               These details apply to the entire purchase.
             </p>
@@ -955,9 +1195,7 @@ export default function ProductsInventory() {
                 Reference
                 <input
                   value={purchase.reference}
-                  onChange={(e) =>
-                    updatePurchase("reference", e.target.value)
-                  }
+                  onChange={(e) => updatePurchase("reference", e.target.value)}
                   placeholder="Optional reference"
                   className={inputClass}
                 />
@@ -967,12 +1205,10 @@ export default function ProductsInventory() {
 
           {/* SHARED ADDITIONAL COSTS */}
           <div className="rounded-xl border bg-white p-4">
-            <h3 className="text-lg font-bold">
-              Additional Purchase Costs
-            </h3>
+            <h3 className="text-lg font-bold">Additional Purchase Costs</h3>
             <p className="mt-1 text-xs text-gray-500">
-              Enter the actual total amounts in rupees. These costs
-              will be allocated across all pieces in this purchase.
+              Enter the actual total amounts in rupees. These costs will be
+              allocated across all pieces in this purchase.
             </p>
 
             <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -988,9 +1224,7 @@ export default function ProductsInventory() {
                     min="0"
                     step="0.01"
                     value={purchase[field]}
-                    onChange={(e) =>
-                      updatePurchase(field, e.target.value)
-                    }
+                    onChange={(e) => updatePurchase(field, e.target.value)}
                     className={inputClass}
                   />
                 </label>
@@ -1002,9 +1236,7 @@ export default function ProductsInventory() {
               <textarea
                 rows={3}
                 value={purchase.notes}
-                onChange={(e) =>
-                  updatePurchase("notes", e.target.value)
-                }
+                onChange={(e) => updatePurchase("notes", e.target.value)}
                 placeholder="Optional purchase notes"
                 className={inputClass}
               />
@@ -1015,9 +1247,7 @@ export default function ProductsInventory() {
           <div className="rounded-xl border bg-white p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h3 className="text-lg font-bold">
-                  Payment Details
-                </h3>
+                <h3 className="text-lg font-bold">Payment Details</h3>
                 <p className="mt-1 text-xs text-gray-500">
                   Record payments made against this purchase.
                 </p>
@@ -1044,11 +1274,7 @@ export default function ProductsInventory() {
                     <select
                       value={payment.method}
                       onChange={(e) =>
-                        updatePayment(
-                          index,
-                          "method",
-                          e.target.value
-                        )
+                        updatePayment(index, "method", e.target.value)
                       }
                       className={inputClass}
                     >
@@ -1068,11 +1294,7 @@ export default function ProductsInventory() {
                       step="0.01"
                       value={payment.amount}
                       onChange={(e) =>
-                        updatePayment(
-                          index,
-                          "amount",
-                          e.target.value
-                        )
+                        updatePayment(index, "amount", e.target.value)
                       }
                       placeholder="0.00"
                       className={inputClass}
@@ -1092,16 +1314,14 @@ export default function ProductsInventory() {
             </div>
 
             <p className="mt-3 text-xs text-gray-500">
-              Cash goes to Cash. UPI and bank transfer are recorded
-              against their respective accounts.
+              Cash goes to Cash. UPI and bank transfer are recorded against
+              their respective accounts.
             </p>
           </div>
 
           {/* PURCHASE SUMMARY */}
           <div className="rounded-xl border bg-gray-50 p-4">
-            <h3 className="text-lg font-bold">
-              Complete Purchase Summary
-            </h3>
+            <h3 className="text-lg font-bold">Complete Purchase Summary</h3>
 
             <div className="mt-4 space-y-2 text-sm">
               <div className="flex justify-between">
@@ -1186,8 +1406,221 @@ export default function ProductsInventory() {
             No products added to this purchase yet.
           </p>
           <p className="mt-1 text-sm text-gray-500">
-            Search and add your first product above.
+            Search and add your first product above, or create a non-website
+            product.
           </p>
+        </div>
+      )}
+
+      {/* POPUP MODAL: CREATE NON-WEBSITE PRODUCT */}
+      {showCreateModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="text-lg font-bold">
+                  Add New Product (Non-Website)
+                </h3>
+                <p className="text-xs text-gray-500">
+                  Creates product in MongoDB and adds it to your purchase list
+                  to enter piece weights.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowCreateModal(false)}
+                className="rounded-lg px-2 py-1 text-sm text-gray-500 hover:bg-gray-100"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              Generated SKU ID:{" "}
+              <strong className="font-mono">{generatedSkuPreview}</strong>
+            </div>
+
+            {modalError && (
+              <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-2.5 text-xs text-red-700">
+                {modalError}
+              </div>
+            )}
+
+            <form onSubmit={handleCreateProduct} className="mt-4 space-y-3">
+              <label className={labelClass}>
+                Product Name *
+                <input
+                  required
+                  value={newProductForm.name}
+                  onChange={(e) =>
+                    setNewProductForm((p) => ({ ...p, name: e.target.value }))
+                  }
+                  placeholder="e.g. 925 Sterling Silver Marquise Floral Cluster Pendant"
+                  className={inputClass}
+                />
+              </label>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className={labelClass}>
+                  Category *
+                  <input
+                    required
+                    list="jewellery-categories"
+                    value={newProductForm.category}
+                    onChange={(e) =>
+                      setNewProductForm((p) => ({
+                        ...p,
+                        category: e.target.value,
+                      }))
+                    }
+                    placeholder="e.g. Pendants"
+                    className={inputClass}
+                  />
+                  <datalist id="jewellery-categories">
+                    {commonCategories.map((cat) => (
+                      <option key={cat} value={cat} />
+                    ))}
+                  </datalist>
+                </label>
+
+                <label className={labelClass}>
+                  Material
+                  <input
+                    value={newProductForm.material}
+                    onChange={(e) =>
+                      setNewProductForm((p) => ({
+                        ...p,
+                        material: e.target.value,
+                      }))
+                    }
+                    placeholder="925 Silver"
+                    className={inputClass}
+                  />
+                </label>
+              </div>
+
+              <label className={labelClass}>
+                Subtitle / Short Description
+                <input
+                  value={newProductForm.subtitle}
+                  onChange={(e) =>
+                    setNewProductForm((p) => ({
+                      ...p,
+                      subtitle: e.target.value,
+                    }))
+                  }
+                  placeholder="Optional design details"
+                  className={inputClass}
+                />
+              </label>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <label className={labelClass}>
+                  Ref. Weight (g)
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.001"
+                    value={newProductForm.grams}
+                    onChange={(e) =>
+                      setNewProductForm((p) => ({
+                        ...p,
+                        grams: e.target.value,
+                      }))
+                    }
+                    placeholder="5.5"
+                    className={inputClass}
+                  />
+                </label>
+
+                <label className={labelClass}>
+                  MRP (₹)
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={newProductForm.mrp}
+                    onChange={(e) =>
+                      setNewProductForm((p) => ({ ...p, mrp: e.target.value }))
+                    }
+                    placeholder="5999"
+                    className={inputClass}
+                  />
+                </label>
+
+                <label className={labelClass}>
+                  Low Stock Alert
+                  <input
+                    type="number"
+                    min="0"
+                    value={newProductForm.lowStockAlert}
+                    onChange={(e) =>
+                      setNewProductForm((p) => ({
+                        ...p,
+                        lowStockAlert: e.target.value,
+                      }))
+                    }
+                    className={inputClass}
+                  />
+                </label>
+              </div>
+
+              <div className="space-y-2">
+                <label className={labelClass}>
+                  Product Image
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageUpload}
+                    disabled={uploadingImage}
+                    className="mt-1 block w-full text-xs text-gray-600 file:mr-3 file:rounded-lg file:border-0 file:bg-gray-100 file:px-3 file:py-2 file:text-xs file:font-semibold file:text-black hover:file:bg-gray-200"
+                  />
+                </label>
+
+                {uploadingImage && (
+                  <p className="text-xs text-blue-600">Uploading image...</p>
+                )}
+
+                <input
+                  type="url"
+                  value={newProductForm.image}
+                  onChange={(e) =>
+                    setNewProductForm((p) => ({ ...p, image: e.target.value }))
+                  }
+                  placeholder="Or paste Cloudinary / image URL directly..."
+                  className={inputClass}
+                />
+
+                {newProductForm.image && (
+                  <img
+                    src={newProductForm.image}
+                    alt="Preview"
+                    className="h-20 w-20 rounded-lg border object-contain"
+                  />
+                )}
+              </div>
+
+              <div className="mt-5 flex items-center justify-end gap-2 border-t pt-4">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateModal(false)}
+                  disabled={creatingProduct}
+                  className="rounded-lg border px-4 py-2 text-sm"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={creatingProduct || uploadingImage}
+                  className="rounded-lg bg-black px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                >
+                  {creatingProduct ? "Adding Product..." : "Add Product"}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>

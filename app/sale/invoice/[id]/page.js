@@ -1,4 +1,3 @@
-
 "use client";
 
 import { Suspense } from "react";
@@ -25,18 +24,16 @@ const dateText = (value) =>
 
 function InvoiceContent() {
   const { id } = useParams();
-const invoiceRef = useRef(null);
-const [sharingPdf, setSharingPdf] = useState(false);
+  const invoiceRef = useRef(null);
+  const [sharingPdf, setSharingPdf] = useState(false);
+  const [sendingWp, setSendingWp] = useState(false);
+  const [wpSent, setWpSent] = useState(false);
   const [sale, setSale] = useState(null);
   const [seller, setSeller] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-async function shareInvoicePDF() {
-  if (!invoiceRef.current || !sale) return;
 
-  try {
-    setSharingPdf(true);
-
+  async function generateInvoicePdfBlob() {
     const html2pdf = (await import("html2pdf.js")).default;
 
     const options = {
@@ -56,59 +53,107 @@ async function shareInvoicePDF() {
       },
       pagebreak: {
         mode: ["css", "legacy"],
-        avoid: [
-          ".inv-header",
-          ".inv-parties",
-          ".inv-lower",
-          ".inv-footer",
-        ],
+        avoid: [".inv-header", ".inv-parties", ".inv-lower", ".inv-footer"],
       },
     };
 
-    const pdfBlob = await html2pdf()
+    return await html2pdf()
       .set(options)
       .from(invoiceRef.current)
       .outputPdf("blob");
-
-    const file = new File(
-      [pdfBlob],
-      `${sale.billNumber || "Sivaah-Invoice"}.pdf`,
-      { type: "application/pdf" }
-    );
-
-    if (
-      navigator.share &&
-      navigator.canShare &&
-      navigator.canShare({ files: [file] })
-    ) {
-      await navigator.share({
-        files: [file],
-        title: "Sivaah Invoice",
-        text: "Thank you for shopping with Sivaah ❤️",
-      });
-    } else {
-      const url = URL.createObjectURL(pdfBlob);
-      const link = document.createElement("a");
-
-      link.href = url;
-      link.download = file.name;
-      link.click();
-
-      URL.revokeObjectURL(url);
-
-      alert(
-        "PDF downloaded. Please attach it manually in WhatsApp."
-      );
-    }
-  } catch (error) {
-    if (error.name !== "AbortError") {
-      console.error("Invoice sharing failed:", error);
-      alert("Could not share invoice. Please try again.");
-    }
-  } finally {
-    setSharingPdf(false);
   }
-}
+
+  async function shareInvoicePDF() {
+    if (!invoiceRef.current || !sale) return;
+
+    try {
+      setSharingPdf(true);
+      const pdfBlob = await generateInvoicePdfBlob();
+
+      const file = new File(
+        [pdfBlob],
+        `${sale.billNumber || "Sivaah-Invoice"}.pdf`,
+        { type: "application/pdf" }
+      );
+
+      if (
+        navigator.share &&
+        navigator.canShare &&
+        navigator.canShare({ files: [file] })
+      ) {
+        await navigator.share({
+          files: [file],
+          title: "Sivaah Invoice",
+          text: "Thank you for shopping with Sivaah ❤️",
+        });
+      } else {
+        const url = URL.createObjectURL(pdfBlob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = file.name;
+        link.click();
+        URL.revokeObjectURL(url);
+        alert("PDF downloaded. Please attach it manually in WhatsApp.");
+      }
+    } catch (err) {
+      if (err.name !== "AbortError") {
+        console.error("Invoice sharing failed:", err);
+        alert("Could not share invoice. Please try again.");
+      }
+    } finally {
+      setSharingPdf(false);
+    }
+  }
+
+  async function sendWhatsApp() {
+    if (!invoiceRef.current || !sale) return;
+
+    const rawNumber = String(
+      sale?.customerSnapshot?.whatsappNumber || ""
+    ).replace(/\D/g, "");
+
+    if (rawNumber.length < 10) {
+      alert("This customer does not have a valid saved WhatsApp number.");
+      return;
+    }
+
+    try {
+      setSendingWp(true);
+      setWpSent(false);
+
+      const pdfBlob = await generateInvoicePdfBlob();
+      const filename = `${sale.billNumber || "Sivaah-Invoice"}.pdf`;
+
+      const formData = new FormData();
+      formData.append("file", pdfBlob, filename);
+      formData.append("customerPhone", rawNumber);
+      formData.append(
+        "customerName",
+        sale.customerSnapshot?.name || "Customer"
+      );
+      formData.append("invoiceNo", sale.billNumber || id);
+      formData.append("totalPaid", String(Math.round(Number(sale.netAmount) || 0)));
+
+      const response = await fetch(`/api/outlet/sales/${id}/send-whatsapp`, {
+        method: "POST",
+        body: formData,
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "Failed to send invoice on WhatsApp.");
+      }
+
+      setWpSent(true);
+    } catch (err) {
+      console.error("WhatsApp API invoice send failed:", err);
+      alert(err.message || "Could not send bill on WhatsApp. Please try again.");
+    } finally {
+      setSendingWp(false);
+    }
+  }
+
   const loadInvoice = useCallback(async () => {
     if (!id) return;
 
@@ -139,79 +184,6 @@ async function shareInvoicePDF() {
     loadInvoice();
   }, [loadInvoice]);
 
- 
-function sendWhatsApp() {
-  const rawNumber = String(
-    sale?.customerSnapshot?.whatsappNumber || ""
-  ).replace(/\D/g, "");
-
-  if (!rawNumber) {
-    alert("This customer does not have a saved WhatsApp number.");
-    return;
-  }
-
-  const phone =
-    rawNumber.length === 10 ? `91${rawNumber}` : rawNumber;
-
-  const items = sale.items || [];
-  const balance = Math.round(Number(sale.balance) || 0);
-
-  const itemLines = items.map((item, index) => {
-    const weight =
-      item.weight != null
-        ? ` | ${Number(item.weight).toFixed(3)} g`
-        : "";
-
-    return (
-      `${index + 1}. ${item.name || "925 Silver Jewellery"}` +
-      `${item.sku ? `\n   SKU: ${item.sku}` : ""}` +
-      `${weight}` +
-      `\n   Price: ${money(item.listPrice)}` +
-      ` | Discount: ${money(item.discountAmount)}` +
-      ` | Amount: ${money(item.finalPrice)}`
-    );
-  });
-
-  const message = [
-    "✨ *SIVAAH | 925 FINE SILVER JEWELS*",
-    "━━━━━━━━━━━━━━━━━━",
-    "*INVOICE / BILL DETAILS*",
-    "",
-    `*Invoice No.:* ${sale.billNumber || "—"}`,
-    `*Date:* ${dateText(sale.createdAt)}`,
-    `*Customer:* ${sale.customerSnapshot?.name || "Walk-in Customer"}`,
-    "",
-    "🛍️ *JEWELLERY DETAILS*",
-    "━━━━━━━━━━━━━━━━━━",
-    ...itemLines,
-    "",
-    "💰 *BILL SUMMARY*",
-    "━━━━━━━━━━━━━━━━━━",
-    `Gross Amount: ${money(sale.grossAmount)}`,
-    `Discount: − ${money(sale.discountAmount)}`,
-    `*Invoice Total: ${money(sale.netAmount)}*`,
-    "",
-    "💳 *PAYMENT DETAILS*",
-    "━━━━━━━━━━━━━━━━━━",
-    `Payment Method: ${sale.paymentMethod || "—"}`,
-    ...(sale.paymentSummary || []).map(
-      (payment) => `${payment.method}: ${money(payment.amount)}`
-    ),
-    `Amount Paid: ${money(sale.amountPaid)}`,
-    ...(balance > 0 ? [`Balance Due: ${money(balance)}`] : []),
-    "",
-    "Thank you for choosing *Sivaah* ❤️",
-    "Your trust means a lot to us.",
-  ].join("\n");
-
-  window.open(
-    `https://wa.me/${phone}?text=${encodeURIComponent(message)}`,
-    "_blank",
-    "noopener,noreferrer"
-  );
-}
-
-
   if (loading) {
     return <main className="inv-state">Loading invoice…</main>;
   }
@@ -237,20 +209,28 @@ function sendWhatsApp() {
   return (
     <main className="inv-page">
       <div className="inv-actions no-print">
-        <button onClick={() => window.print()}>
-          Download / Print PDF
+        <button onClick={() => window.print()}>Download / Print PDF</button>
+
+        <button
+          className="inv-whatsapp"
+          onClick={sendWhatsApp}
+          disabled={sendingWp}
+        >
+          {sendingWp
+            ? "Sending Bill to WhatsApp..."
+            : wpSent
+            ? "Bill Sent on WhatsApp ✓"
+            : "Send Bill on WhatsApp"}
         </button>
 
-        <button className="inv-whatsapp" onClick={sendWhatsApp}>
-          Send Summary on WhatsApp
+        <button
+          className="inv-share-pdf"
+          onClick={shareInvoicePDF}
+          disabled={sharingPdf}
+        >
+          {sharingPdf ? "Preparing PDF..." : "Share Invoice PDF"}
         </button>
-<button
-  className="inv-share-pdf"
-  onClick={shareInvoicePDF}
-  disabled={sharingPdf}
->
-  {sharingPdf ? "Preparing PDF..." : "Share Invoice PDF"}
-</button>
+
         <button
           className="inv-back"
           onClick={() => (window.location.href = "/sale")}
