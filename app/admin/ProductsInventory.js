@@ -118,6 +118,7 @@ const commonCategories = [
   "Rings",
   "Earrings",
   "Chains",
+  "Kada",
   "Bracelets",
   "Anklets",
   "Necklaces",
