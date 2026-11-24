@@ -1,40 +1,5 @@
 import { NextResponse } from "next/server";
-import crypto from "crypto";
-import { sendWhatsAppInvoice } from "@/lib/sivaahWhatsappService"; // adjust path to where you saved sivaahWhatsappService.js
-
-async function uploadPdfToCloudinary(pdfBuffer, filename) {
-  const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
-  const apiKey = process.env.CLOUDINARY_API_KEY;
-  const apiSecret = process.env.CLOUDINARY_API_SECRET;
-
-  const timestamp = Math.round(Date.now() / 1000);
-  const publicId = `sivaah_invoices/${filename.replace(/\.pdf$/i, "")}_${timestamp}`;
-  const folder = "sivaah_invoices";
-
-  // Sign Cloudinary upload request
-  const signatureString = `folder=${folder}&public_id=${publicId}&timestamp=${timestamp}${apiSecret}`;
-  const signature = crypto.createHash("sha1").update(signatureString).digest("hex");
-
-  const formData = new FormData();
-  formData.append("file", new Blob([pdfBuffer], { type: "application/pdf" }), filename);
-  formData.append("api_key", apiKey);
-  formData.append("timestamp", String(timestamp));
-  formData.append("folder", folder);
-  formData.append("public_id", publicId);
-  formData.append("signature", signature);
-
-  const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/raw/upload`, {
-    method: "POST",
-    body: formData,
-  });
-
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data?.error?.message || "Failed to upload invoice PDF to Cloudinary");
-  }
-
-  return data.secure_url;
-}
+import { uploadWhatsAppMedia, sendWhatsAppInvoice } from "@/lib/sivaahWhatsappService";
 
 export async function POST(request, { params }) {
   try {
@@ -56,21 +21,21 @@ export async function POST(request, { params }) {
     const pdfBuffer = Buffer.from(arrayBuffer);
     const filename = `${invoiceNo || params.id || "Sivaah-Invoice"}.pdf`;
 
-    // 1. Upload PDF to get a public HTTPS URL for Meta Cloud API
-    const pdfUrl = await uploadPdfToCloudinary(pdfBuffer, filename);
+    // 1. Upload PDF directly to Meta WhatsApp Cloud API
+    const mediaId = await uploadWhatsAppMedia(pdfBuffer, filename);
 
-    // 2. Send via WhatsApp Cloud API (sivaah_invoice_pdf template)
+    // 2. Send invoice template using the returned mediaId
     const waResponse = await sendWhatsAppInvoice({
       customerPhone,
       customerName: customerName || "Customer",
       invoiceNo: invoiceNo || params.id,
       totalPaid: Number(totalPaid) || 0,
-      pdfUrl,
+      mediaId,
     });
 
     return NextResponse.json({
       success: true,
-      pdfUrl,
+      mediaId,
       messageId: waResponse?.messages?.[0]?.id || null,
     });
   } catch (error) {

@@ -132,7 +132,10 @@ function InvoiceContent() {
         sale.customerSnapshot?.name || "Customer"
       );
       formData.append("invoiceNo", sale.billNumber || id);
-      formData.append("totalPaid", String(Math.round(Number(sale.netAmount) || 0)));
+      formData.append(
+        "totalPaid",
+        String(Math.round(Number(sale.amountPaid ?? sale.netAmount) || 0))
+      );
 
       const response = await fetch(`/api/outlet/sales/${id}/send-whatsapp`, {
         method: "POST",
@@ -204,6 +207,14 @@ function InvoiceContent() {
 
   const tax = sale.taxSnapshot || {};
   const items = sale.items || [];
+  const replacedItems = sale.replacedItems || [];
+  const replacementCredit = Math.round(Number(sale.replacementCredit) || 0);
+  const walletUsed = Math.round(Number(sale.walletUsed) || 0);
+  const walletCredited = Math.round(Number(sale.walletCredited) || 0);
+  const netPayableAfterCredits = Math.max(
+    0,
+    Math.round(Number(sale.netAmount) || 0) - replacementCredit - walletUsed
+  );
   const balance = Math.round(Number(sale.balance) || 0);
 
   return (
@@ -250,7 +261,7 @@ function InvoiceContent() {
           </div>
 
           <div className="inv-meta">
-            <h1>TAX INVOICE</h1>
+            <h1>{replacedItems.length > 0 ? "TAX / EXCHANGE INVOICE" : "TAX INVOICE"}</h1>
             <p>
               <b>Invoice No:</b> {sale.billNumber}
             </p>
@@ -312,6 +323,7 @@ function InvoiceContent() {
           </section>
         </div>
 
+        {/* PURCHASED ITEMS TABLE */}
         <div className="inv-table-wrap">
           <table className="inv-table">
             <thead>
@@ -357,12 +369,67 @@ function InvoiceContent() {
           </table>
         </div>
 
+        {/* RETURNED / EXCHANGED ITEMS SECTION */}
+        {replacedItems.length > 0 && (
+          <div
+            style={{
+              marginTop: "14px",
+              padding: "10px 12px",
+              border: "1px solid #e5e7eb",
+              borderRadius: "8px",
+              background: "#fafafa",
+            }}
+          >
+            <div
+              style={{
+                fontSize: "11px",
+                fontWeight: 700,
+                letterSpacing: "0.06em",
+                color: "#374151",
+                marginBottom: "6px",
+              }}
+            >
+              EXCHANGE / RETURNED ITEMS ADJUSTED
+            </div>
+
+            <table className="inv-table" style={{ marginTop: 0 }}>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Returned Item</th>
+                  <th>Original Bill</th>
+                  <th>Weight</th>
+                  <th>Exchange Credit</th>
+                </tr>
+              </thead>
+              <tbody>
+                {replacedItems.map((rep, idx) => (
+                  <tr key={`${rep.pieceId || rep.sku}-${idx}`}>
+                    <td>{idx + 1}</td>
+                    <td>
+                      <b>{rep.name}</b>
+                      {rep.sku && <small>{rep.sku}</small>}
+                    </td>
+                    <td>{rep.originalBillNumber}</td>
+                    <td>{Number(rep.weight || 0).toFixed(3)} g</td>
+                    <td>− {money(rep.creditAmount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
         <div className="inv-lower">
           <section>
             <h3>PAYMENT DETAILS</h3>
 
             <p>
-              <b>Method:</b> {sale.paymentMethod || "—"}
+              <b>Method:</b>{" "}
+              {Number(sale.amountPaid) === 0 &&
+              (replacementCredit > 0 || walletUsed > 0)
+                ? "Adjusted via Exchange / Wallet"
+                : sale.paymentMethod || "—"}
             </p>
 
             {(sale.paymentSummary || []).map((payment, index) => (
@@ -374,6 +441,26 @@ function InvoiceContent() {
             <p>
               <b>Salesperson:</b> {sale.salespersonName || "—"}
             </p>
+
+            {walletCredited > 0 && (
+              <div
+                style={{
+                  marginTop: "8px",
+                  padding: "8px 10px",
+                  borderRadius: "6px",
+                  background: "#ecfdf5",
+                  border: "1px solid #a7f3d0",
+                  color: "#065f46",
+                  fontSize: "12px",
+                }}
+              >
+                <b>Wallet Credit Added: +{money(walletCredited)}</b>
+                <div>
+                  Surplus exchange value has been credited to the customer&apos;s
+                  Sivaah wallet for future purchases.
+                </div>
+              </div>
+            )}
 
             <p className="inv-note">
               Please retain this invoice for your records.
@@ -418,10 +505,38 @@ function InvoiceContent() {
               <b>{money(sale.netAmount)}</b>
             </div>
 
+            {replacementCredit > 0 && (
+              <div>
+                <span>Less: Exchange credit</span>
+                <b>− {money(replacementCredit)}</b>
+              </div>
+            )}
+
+            {walletUsed > 0 && (
+              <div>
+                <span>Less: Wallet redeemed</span>
+                <b>− {money(walletUsed)}</b>
+              </div>
+            )}
+
+            {(replacementCredit > 0 || walletUsed > 0) && (
+              <div className="inv-total">
+                <span>Net payable</span>
+                <b>{money(netPayableAfterCredits)}</b>
+              </div>
+            )}
+
             <div>
               <span>Amount paid</span>
               <b>{money(sale.amountPaid)}</b>
             </div>
+
+            {walletCredited > 0 && (
+              <div>
+                <span>Credited to wallet</span>
+                <b>+ {money(walletCredited)}</b>
+              </div>
+            )}
 
             {balance > 0 && (
               <div className="inv-due">

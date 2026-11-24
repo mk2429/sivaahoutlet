@@ -1,4 +1,3 @@
-
 import mongoose from "mongoose";
 
 const PaymentLineSchema = new mongoose.Schema(
@@ -9,6 +8,32 @@ const PaymentLineSchema = new mongoose.Schema(
       required: true,
     },
     amount: { type: Number, required: true, min: 0 },
+  },
+  { _id: false }
+);
+
+const ReplacedItemSnapshotSchema = new mongoose.Schema(
+  {
+    originalSaleId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Sale",
+      required: true,
+    },
+    originalBillNumber: { type: String, required: true },
+    productId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Product",
+      required: true,
+    },
+    pieceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      required: true,
+    },
+    name: { type: String, required: true },
+    sku: { type: String, default: "" },
+    batchId: { type: String, default: "" },
+    weight: { type: Number, required: true, min: 0 },
+    creditAmount: { type: Number, required: true, min: 0 },
   },
   { _id: false }
 );
@@ -46,7 +71,6 @@ const SaleItemSchema = new mongoose.Schema(
     profitAtSale: { type: Number, default: null },
 
     // Cumulative confirmed silver replacement adjustment
-    // Positive = gain, negative = loss
     silverReplacementAdjustment: {
       type: Number,
       default: 0,
@@ -56,6 +80,25 @@ const SaleItemSchema = new mongoose.Schema(
     actualProfitAfterReplenishment: {
       type: Number,
       default: null,
+    },
+
+    // Exchange tracking so replaced items are excluded from future 7-day search
+    isReplaced: {
+      type: Boolean,
+      default: false,
+    },
+    replacedAt: {
+      type: Date,
+      default: null,
+    },
+    replacedInSaleId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Sale",
+      default: null,
+    },
+    replacedInBillNumber: {
+      type: String,
+      default: "",
     },
   },
   { _id: false }
@@ -93,6 +136,26 @@ const SaleSchema = new mongoose.Schema(
       required: true,
     },
 
+    replacedItems: {
+      type: [ReplacedItemSnapshotSchema],
+      default: [],
+    },
+    replacementCredit: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    walletUsed: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    walletCredited: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
     discount: {
       discountId: {
         type: mongoose.Schema.Types.ObjectId,
@@ -110,6 +173,7 @@ const SaleSchema = new mongoose.Schema(
 
     // Bill-level totals: derived from individual pieces
     totalCostAtSale: { type: Number, default: 0, min: 0 },
+    returnedProfitReversed: { type: Number, default: 0 },
     profitAtSale: { type: Number, default: 0 },
 
     silverReplacementAdjustment: {

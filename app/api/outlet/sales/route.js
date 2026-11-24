@@ -1,4 +1,3 @@
-
 import { NextResponse } from "next/server";
 import mongoose from "mongoose";
 
@@ -60,6 +59,8 @@ export async function POST(request) {
     const {
       customerId = null,
       items = [],
+      replacedItems: requestedReplacements = [],
+      useWallet = false,
       discountId = null,
       paymentMethod = "Cash",
       paymentSummary = [],
@@ -68,7 +69,7 @@ export async function POST(request) {
     } = body;
 
     if (!Array.isArray(items) || items.length === 0) {
-      return error("Select at least one jewellery piece.");
+      return error("Select at least one new jewellery piece.");
     }
 
     const allowedMethods = [
@@ -101,7 +102,7 @@ export async function POST(request) {
     const normalizedItems = [];
     const seenPieces = new Set();
 
-    // Validate and prepare all requested pieces.
+    // 1. Validate new pieces being purchased
     for (const requested of items) {
       if (
         !mongoose.Types.ObjectId.isValid(requested.productId) ||
@@ -137,9 +138,7 @@ export async function POST(request) {
       const weight = Number(piece.weight);
 
       if (!batch || !Number.isFinite(weight) || weight <= 0) {
-        return error(
-          `${product.name}: invalid piece weight or batch ID.`
-        );
+        return error(`${product.name}: invalid piece weight or batch ID.`);
       }
 
       const pricing = calculatePiecePricing({
@@ -172,18 +171,115 @@ export async function POST(request) {
         listPrice,
         discountAmount: 0,
         finalPrice: listPrice,
-
         actualAcquisitionCost: piece.actualAcquisitionCost ?? null,
-        calculatedSourceCost:
-          piece.calculatedSourceCost ?? pricing.cpSource,
-
+        calculatedSourceCost: piece.calculatedSourceCost ?? pricing.cpSource,
         replacementCostAtSale: pricing.cpToday,
-
-        // PACKAGING_COST is already included in pricing.cpToday.
         packagingCostAtSale: PACKAGING_COST,
         costAtSale: pricing.cpToday,
       });
     }
+
+    // 2. Validate returned/replaced pieces (unworn items sold in last 7 days)
+    const validatedReplacements = [];
+    const seenReturnedPieces = new Set();
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    sevenDaysAgo.setHours(0, 0, 0, 0);
+
+    if (
+      Array.isArray(requestedReplacements) &&
+      requestedReplacements.length > 0
+    ) {
+      for (const rep of requestedReplacements) {
+        if (
+          !mongoose.Types.ObjectId.isValid(rep.saleId) ||
+          !mongoose.Types.ObjectId.isValid(rep.productId) ||
+          !mongoose.Types.ObjectId.isValid(rep.pieceId)
+        ) {
+          return error("Invalid replacement item selected.");
+        }
+
+        const repKey = `${rep.saleId}:${rep.pieceId}`;
+        if (seenReturnedPieces.has(repKey)) {
+          return error("The same sold piece cannot be replaced twice.");
+        }
+        seenReturnedPieces.add(repKey);
+
+        const oldSale = await Sale.findById(rep.saleId);
+        if (!oldSale || oldSale.status !== "completed") {
+          return error("Original invoice for replacement was not found.");
+        }
+
+        if (new Date(oldSale.createdAt) < sevenDaysAgo) {
+          return error(
+            `Invoice ${oldSale.billNumber} is older than 7 days and cannot be replaced.`
+          );
+        }
+
+        const oldItem = oldSale.items.find(
+          (it) =>
+            String(it.productId) === String(rep.productId) &&
+            String(it.pieceId) === String(rep.pieceId)
+        );
+
+        if (!oldItem) {
+          return error("Sold piece not found on original invoice.");
+        }
+
+        if (oldItem.isReplaced) {
+          return error(
+            `${oldItem.name} (${oldSale.billNumber}) has already been replaced.`
+          );
+        }
+
+        const itemsSum = oldSale.items.reduce(
+          (sum, it) => sum + Number(it.finalPrice || 0),
+          0
+        );
+
+        let creditAmount = Math.round(Number(oldItem.finalPrice || 0));
+        if (
+          itemsSum > 0 &&
+          Math.abs(itemsSum - Number(oldSale.netAmount || 0)) >= 1
+        ) {
+          creditAmount = Math.round(
+            (Number(oldItem.finalPrice || 0) / itemsSum) *
+              Number(oldSale.netAmount || 0)
+          );
+        }
+
+        const oldItemCost = Number(
+          oldItem.costAtSale ??
+            oldItem.replacementCostAtSale ??
+            oldItem.actualAcquisitionCost ??
+            0
+        );
+
+        const originalItemProfit =
+          oldItem.profitAtSale != null
+            ? Number(oldItem.profitAtSale)
+            : round2(creditAmount - oldItemCost);
+
+        validatedReplacements.push({
+          originalSaleId: oldSale._id,
+          originalBillNumber: oldSale.billNumber,
+          productId: oldItem.productId,
+          pieceId: oldItem.pieceId,
+          name: oldItem.name,
+          sku: oldItem.sku || "",
+          batchId: oldItem.batchId || "",
+          weight: Number(oldItem.weight || 0),
+          actualAcquisitionCost: oldItem.actualAcquisitionCost ?? null,
+          calculatedSourceCost: oldItem.calculatedSourceCost ?? null,
+          creditAmount,
+          originalItemProfit,
+        });
+      }
+    }
+
+    const replacementCredit = Math.round(
+      validatedReplacements.reduce((sum, r) => sum + r.creditAmount, 0)
+    );
 
     let customer = null;
 
@@ -192,11 +288,17 @@ export async function POST(request) {
         return error("Invalid customer.");
       }
 
-      customer = await Customer.findById(customerId).lean();
+      customer = await Customer.findById(customerId);
 
       if (!customer) {
         return error("Customer not found.", 404);
       }
+    }
+
+    if (replacementCredit > 0 && !customer) {
+      return error(
+        "Select or add a customer before processing a replacement."
+      );
     }
 
     let discount = null;
@@ -262,9 +364,7 @@ export async function POST(request) {
             ? (item.listPrice * Number(discount.value || 0)) / 100
             : Number(discount.value || 0);
 
-        item.discountAmount = round2(
-          Math.min(raw, item.listPrice * 0.15)
-        );
+        item.discountAmount = round2(Math.min(raw, item.listPrice * 0.15));
 
         item.finalPrice = round2(
           Math.max(0, item.listPrice - item.discountAmount)
@@ -276,9 +376,28 @@ export async function POST(request) {
 
     discountAmount = round2(discountAmount);
 
-    // Final customer payable amount is a whole rupee.
+    // New items invoice value
     const calculatedNetAmount = round2(grossAmount - discountAmount);
     const netAmount = Math.round(calculatedNetAmount);
+
+    // Apply Replacement Credit & Wallet Balance
+    const afterReplacement = netAmount - replacementCredit;
+    const walletCredited =
+      afterReplacement < 0 ? Math.abs(afterReplacement) : 0;
+
+    const availableWallet = customer
+      ? Math.max(0, Math.round(Number(customer.walletBalance || 0)))
+      : 0;
+
+    const walletUsed =
+      useWallet && afterReplacement > 0
+        ? Math.min(availableWallet, afterReplacement)
+        : 0;
+
+    const payableAfterAdjustments = Math.max(
+      0,
+      afterReplacement - walletUsed
+    );
 
     const taxRate = Number(process.env.GST_RATE || 3);
 
@@ -304,17 +423,17 @@ export async function POST(request) {
 
     const paid =
       amountPaid === undefined || amountPaid === ""
-        ? netAmount
+        ? payableAfterAdjustments
         : Number(amountPaid);
 
     if (
       !Number.isFinite(paid) ||
       paid < 0 ||
-      paid > netAmount ||
+      paid > payableAfterAdjustments ||
       !Number.isInteger(paid)
     ) {
       return error(
-        "Amount received must be a whole rupee between ₹0 and the bill total."
+        `Amount received must be a whole rupee between ₹0 and ₹${payableAfterAdjustments}.`
       );
     }
 
@@ -329,35 +448,36 @@ export async function POST(request) {
 
     if (
       validPaymentSummary.length &&
-      (
-        validPaymentSummary.some(
-          (line) =>
-            !allowedMethods.includes(line.method) ||
-            !Number.isFinite(Number(line.amount)) ||
-            Number(line.amount) < 0
-        ) ||
-        Math.abs(round2(paymentTotal) - paid) > 0.001
-      )
+      (validPaymentSummary.some(
+        (line) =>
+          !allowedMethods.includes(line.method) ||
+          !Number.isFinite(Number(line.amount)) ||
+          Number(line.amount) < 0
+      ) ||
+        Math.abs(round2(paymentTotal) - paid) > 0.001)
     ) {
       return error("Payment breakdown must equal the amount received.");
     }
 
-    // Calculate permanent item-level profit snapshots.
     for (const item of normalizedItems) {
-      item.profitAtSale = round2(
-        item.finalPrice - item.costAtSale
-      );
+      item.profitAtSale = round2(item.finalPrice - item.costAtSale);
     }
 
-    // Bill-level cost and profit snapshots.
     const totalCostAtSale = round2(
-      normalizedItems.reduce(
-        (sum, item) => sum + item.costAtSale,
+      normalizedItems.reduce((sum, item) => sum + item.costAtSale, 0)
+    );
+
+    // Subtract original profit of returned item(s) so overall profit across bills is exact
+    const returnedProfitReversed = round2(
+      validatedReplacements.reduce(
+        (sum, r) => sum + (Number(r.originalItemProfit) || 0),
         0
       )
     );
 
-    const profitAtSale = round2(netAmount - totalCostAtSale);
+    const profitAtSale = round2(
+      netAmount - totalCostAtSale - returnedProfitReversed
+    );
 
     const billNumber = await generateInvoiceNumber();
 
@@ -373,11 +493,9 @@ export async function POST(request) {
       listPrice: item.listPrice,
       discountAmount: item.discountAmount,
       finalPrice: item.finalPrice,
-
       actualAcquisitionCost: item.actualAcquisitionCost,
       calculatedSourceCost: item.calculatedSourceCost,
       replacementCostAtSale: item.replacementCostAtSale,
-
       packagingCostAtSale: item.packagingCostAtSale,
       costAtSale: item.costAtSale,
       profitAtSale: item.profitAtSale,
@@ -388,7 +506,7 @@ export async function POST(request) {
     let savedSale;
 
     await session.withTransaction(async () => {
-      // Recheck and mark every piece sold inside the transaction.
+      // A. Mark new pieces as sold
       for (const item of normalizedItems) {
         const update = await Product.updateOne(
           {
@@ -411,33 +529,75 @@ export async function POST(request) {
         }
 
         const product = await Product.findById(item.productId).session(session);
-
         if (product) {
           product.stockQuantity = product.pieces.filter(
             (piece) => piece.status === "inStock"
           ).length;
-
           await product.save({ session });
         }
       }
 
+      // B. Put returned/replaced pieces directly back into inStock
+      for (const rep of validatedReplacements) {
+        const restockUpdate = await Product.updateOne(
+          {
+            _id: rep.productId,
+            pieces: {
+              $elemMatch: {
+                _id: rep.pieceId,
+                status: "sold",
+              },
+            },
+          },
+          { $set: { "pieces.$.status": "inStock" } },
+          { session }
+        );
+
+        if (restockUpdate.modifiedCount !== 1) {
+          throw new Error(
+            `Returned piece ${rep.name} is not marked as sold in inventory.`
+          );
+        }
+
+        const returnedProduct = await Product.findById(rep.productId).session(
+          session
+        );
+        if (returnedProduct) {
+          returnedProduct.stockQuantity = returnedProduct.pieces.filter(
+            (piece) => piece.status === "inStock"
+          ).length;
+          await returnedProduct.save({ session });
+        }
+      }
+
+      // C. Create the new Sale record
       const [sale] = await Sale.create(
         [
           {
             billNumber,
             silverRateAtSale: currentRate,
-
             customerId: customer?._id || null,
-
             customerSnapshot: {
               name: customer?.name || "Walk-in Customer",
               whatsappNumber: customer?.whatsappNumber || "",
               address: customer?.address || "",
               gstin: customer?.gstin || "",
             },
-
             items: saleItems,
-
+            replacedItems: validatedReplacements.map((r) => ({
+              originalSaleId: r.originalSaleId,
+              originalBillNumber: r.originalBillNumber,
+              productId: r.productId,
+              pieceId: r.pieceId,
+              name: r.name,
+              sku: r.sku,
+              batchId: r.batchId,
+              weight: r.weight,
+              creditAmount: r.creditAmount,
+            })),
+            replacementCredit,
+            walletUsed,
+            walletCredited,
             discount: discount
               ? {
                   discountId: discount._id,
@@ -446,18 +606,15 @@ export async function POST(request) {
                   value: Number(discount.value || 0),
                 }
               : undefined,
-
             grossAmount,
             discountAmount,
             netAmount,
-
-            // Permanent bill-level snapshots.
             totalCostAtSale,
+            returnedProfitReversed,
             profitAtSale,
-
             taxSnapshot,
             amountPaid: paid,
-            balance: round2(netAmount - paid),
+            balance: round2(payableAfterAdjustments - paid),
             paymentMethod,
             paymentSummary: validPaymentSummary,
             salespersonName: String(salespersonName || ""),
@@ -467,25 +624,163 @@ export async function POST(request) {
         { session }
       );
 
-      const ledgerEntries = normalizedItems.map((item) => ({
-        entryDate: sale.createdAt || new Date(),
-        movementType: "sale",
-        direction: "out",
-        productId: item.productId,
-        pieceId: item.pieceId,
-        saleId: sale._id,
-        billNumber,
-        sku: item.sku,
-        productName: item.productName,
-        batchId: item.batchId,
-        weight: item.weight,
-        sourceSilverRate: currentRate,
-        labourPerGram: item.batch.labourPerGram,
-        actualAcquisitionCost: item.actualAcquisitionCost,
-        calculatedSourceCost: item.calculatedSourceCost,
-        reason: "Jewellery sold",
-        reference: billNumber,
-      }));
+      // D. Lock replaced items on their original invoices & original customer's bill snapshot
+      for (const rep of validatedReplacements) {
+        const oldSaleDoc = await Sale.findById(rep.originalSaleId).session(
+          session
+        );
+        if (oldSaleDoc) {
+          const targetItem = oldSaleDoc.items.find(
+            (it) =>
+              String(it.productId) === String(rep.productId) &&
+              String(it.pieceId) === String(rep.pieceId)
+          );
+          if (targetItem) {
+            if (targetItem.isReplaced) {
+              throw new Error(
+                `${targetItem.name} was already replaced in another bill.`
+              );
+            }
+            targetItem.isReplaced = true;
+            targetItem.replacedAt = sale.createdAt || new Date();
+            targetItem.replacedInSaleId = sale._id;
+            targetItem.replacedInBillNumber = billNumber;
+            await oldSaleDoc.save({ session });
+          }
+
+          if (oldSaleDoc.customerId) {
+            await Customer.updateOne(
+              {
+                _id: oldSaleDoc.customerId,
+                "bills.saleId": oldSaleDoc._id,
+              },
+              {
+                $set: {
+                  "bills.$[b].items.$[i].isReplaced": true,
+                },
+              },
+              {
+                arrayFilters: [
+                  { "b.saleId": oldSaleDoc._id },
+                  { "i.pieceId": rep.pieceId },
+                ],
+                session,
+              }
+            );
+          }
+        }
+      }
+
+      // E. Save Bill Snapshot on Customer & Update Wallet
+      if (customer) {
+        const custDoc = await Customer.findById(customer._id).session(session);
+        if (custDoc) {
+          let runningBalance = Math.max(
+            0,
+            Math.round(Number(custDoc.walletBalance || 0))
+          );
+
+          if (walletUsed > 0) {
+            if (runningBalance < walletUsed) {
+              throw new Error("Insufficient customer wallet balance.");
+            }
+            runningBalance -= walletUsed;
+            custDoc.walletTransactions.push({
+              type: "debit",
+              amount: walletUsed,
+              balanceAfter: runningBalance,
+              reason: `Redeemed on bill ${billNumber}`,
+              saleId: sale._id,
+              billNumber,
+            });
+          }
+
+          if (walletCredited > 0) {
+            runningBalance += walletCredited;
+            custDoc.walletTransactions.push({
+              type: "credit",
+              amount: walletCredited,
+              balanceAfter: runningBalance,
+              reason: `Surplus exchange credit on bill ${billNumber}`,
+              saleId: sale._id,
+              billNumber,
+            });
+          }
+
+          custDoc.walletBalance = runningBalance;
+
+          custDoc.bills.unshift({
+            saleId: sale._id,
+            billNumber,
+            billDate: sale.createdAt || new Date(),
+            items: saleItems.map((it) => ({
+              productId: it.productId,
+              pieceId: it.pieceId,
+              name: it.name,
+              sku: it.sku,
+              weight: it.weight,
+              finalPrice: it.finalPrice,
+              isReplaced: false,
+            })),
+            totalWeight: round2(totalWeight),
+            grossAmount,
+            discountAmount,
+            netAmount,
+            replacementCredit,
+            walletUsed,
+            walletCredited,
+            amountPaid: paid,
+            paymentMethod,
+          });
+
+          await custDoc.save({ session });
+        }
+      }
+
+      // F. Write JewelleryLedger entries (stock_out for new pieces, stock_in for returned pieces)
+      const ledgerEntries = [
+        ...normalizedItems.map((item) => ({
+          entryDate: sale.createdAt || new Date(),
+          movementType: "sale",
+          direction: "out",
+          productId: item.productId,
+          pieceId: item.pieceId,
+          saleId: sale._id,
+          billNumber,
+          sku: item.sku,
+          productName: item.productName,
+          batchId: item.batchId,
+          weight: item.weight,
+          sourceSilverRate: currentRate,
+          labourPerGram: item.batch.labourPerGram,
+          actualAcquisitionCost: item.actualAcquisitionCost,
+          calculatedSourceCost: item.calculatedSourceCost,
+          reason: "Jewellery sold",
+          reference: billNumber,
+        })),
+        ...validatedReplacements.map((rep) => {
+          const decoded = decodeBatchId(rep.batchId);
+          return {
+            entryDate: sale.createdAt || new Date(),
+            movementType: "stock_in",
+            direction: "in",
+            productId: rep.productId,
+            pieceId: rep.pieceId,
+            saleId: sale._id,
+            billNumber,
+            sku: rep.sku,
+            productName: rep.name,
+            batchId: rep.batchId,
+            weight: rep.weight,
+            sourceSilverRate: decoded?.sourceSilverRate || currentRate,
+            labourPerGram: decoded?.labourPerGram || 0,
+            actualAcquisitionCost: rep.actualAcquisitionCost,
+            calculatedSourceCost: rep.calculatedSourceCost,
+            reason: `Customer exchange return (from ${rep.originalBillNumber})`,
+            reference: billNumber,
+          };
+        }),
+      ];
 
       await JewelleryLedger.insertMany(ledgerEntries, { session });
 
