@@ -1,15 +1,16 @@
-
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 import "./outlet-dashboard.css";
 import CustomerManager from "./CustomerManager";
+
 const money = (value) =>
   Number(value || 0).toLocaleString("en-IN", {
     style: "currency",
     currency: "INR",
     maximumFractionDigits: 0,
   });
+
 const silverRateMoney = (value) =>
   Number(value || 0).toLocaleString("en-IN", {
     style: "currency",
@@ -17,6 +18,7 @@ const silverRateMoney = (value) =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
+
 async function fetchJson(url) {
   const response = await fetch(url, { cache: "no-store" });
   const data = await response.json().catch(() => ({}));
@@ -26,6 +28,30 @@ async function fetchJson(url) {
   }
 
   return data;
+}
+
+// Calculates 4-part breakdown: Silver Value (unchanged), Craftsmanship (80% of making), Plating (20% of making), and 3% GST
+function calculatePriceBreakdown({ price, weight, silverRateInclusive }) {
+  const targetPrice = Number(price) || 0;
+  const wt = Number(weight) || 0;
+  const silverRateExcludingGST = Number(silverRateInclusive) / 1.03;
+
+  const gst = Math.round(targetPrice * 0.03);
+  const rawSilverValue = Math.round(wt * silverRateExcludingGST);
+
+  // Silver value stays constant; discount reduces only total making (x)
+  const silverValue = Math.min(rawSilverValue, Math.max(0, targetPrice - gst));
+  const totalMaking = Math.max(0, targetPrice - silverValue - gst);
+
+  const craftsmanship = Math.round(totalMaking * 0.8);
+  const plating = Math.max(0, totalMaking - craftsmanship);
+
+  return {
+    silverValue,
+    craftsmanship,
+    plating,
+    gst,
+  };
 }
 
 export default function OutletDashboard() {
@@ -42,6 +68,8 @@ export default function OutletDashboard() {
   const [silverRate, setSilverRate] = useState(null);
   const [loadingSilverRate, setLoadingSilverRate] = useState(true);
   const [showPriceBreakup, setShowPriceBreakup] = useState(false);
+  const [expandedOffers, setExpandedOffers] = useState({});
+
   const loadSilverRate = async () => {
     try {
       setLoadingSilverRate(true);
@@ -58,8 +86,6 @@ export default function OutletDashboard() {
         throw new Error("Invalid silver rate");
       }
 
-      // API rate includes 3% GST.
-      // Convert it back to the rate before GST.
       const rateWithoutGST = inclusiveRate / 1.03;
 
       setSilverRate({
@@ -74,9 +100,11 @@ export default function OutletDashboard() {
       setLoadingSilverRate(false);
     }
   };
+
   useEffect(() => {
     loadSilverRate();
   }, []);
+
   useEffect(() => {
     setToday(
       new Date().toLocaleDateString("en-IN", {
@@ -118,7 +146,11 @@ export default function OutletDashboard() {
     if (!selectedProduct) return;
 
     function handleKeyDown(event) {
-      if (event.key === "Escape") setSelectedProduct(null);
+      if (event.key === "Escape") {
+        setShowPriceBreakup(false);
+        setExpandedOffers({});
+        setSelectedProduct(null);
+      }
     }
 
     window.addEventListener("keydown", handleKeyDown);
@@ -126,7 +158,6 @@ export default function OutletDashboard() {
   }, [selectedProduct]);
 
   async function loadCollections() {
-    // Open the tab immediately so the browser doesn't block it.
     const whatsappWindow = window.open("about:blank", "_blank");
 
     setLoadingCollections(true);
@@ -150,9 +181,9 @@ export default function OutletDashboard() {
 
       const message = buildWhatsAppMessage(report);
 
-      whatsappWindow.location.href =
-        `https://wa.me/?text=${encodeURIComponent(message)}`;
-
+      whatsappWindow.location.href = `https://wa.me/?text=${encodeURIComponent(
+        message
+      )}`;
     } catch (err) {
       if (whatsappWindow && !whatsappWindow.closed) {
         whatsappWindow.close();
@@ -163,6 +194,7 @@ export default function OutletDashboard() {
       setLoadingCollections(false);
     }
   }
+
   function buildWhatsAppMessage(report) {
     const lines = [
       "SIVAAH | DAILY COLLECTION REPORT",
@@ -184,8 +216,9 @@ export default function OutletDashboard() {
       `Outstanding: ${money(report.outstanding)}`,
       "",
       "PRODUCTS SOLD",
-      ...(report.bills || []).map((bill) =>
-        `${bill.billNumber} | ${bill.time} | ${bill.customerName} | ${bill.paymentSummary} | Bill: ${money(bill.netAmount)} | Paid: ${money(bill.amountPaid)}`
+      ...(report.bills || []).map(
+        (bill) =>
+          `${bill.billNumber} | ${bill.time} | ${bill.customerName} | ${bill.paymentSummary} | Bill: ${money(bill.netAmount)} | Paid: ${money(bill.amountPaid)}`
       ),
       "",
       "EXPENSES",
@@ -202,18 +235,23 @@ export default function OutletDashboard() {
     if (!collections) return;
 
     const message = buildWhatsAppMessage(collections);
+    const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(message)}`;
 
-    // Open the report first so you can copy it.
-    const whatsappUrl =
-      `https://wa.me/?text=${encodeURIComponent(message)}`;
-
-    window.open(
-      whatsappUrl,
-      "_blank",
-      "noopener,noreferrer"
-    );
+    window.open(whatsappUrl, "_blank", "noopener,noreferrer");
   }
 
+  function toggleOfferBreakdown(offerId) {
+    setExpandedOffers((prev) => ({
+      ...prev,
+      [offerId]: !prev[offerId],
+    }));
+  }
+
+  function closeRatesModal() {
+    setShowPriceBreakup(false);
+    setExpandedOffers({});
+    setSelectedProduct(null);
+  }
 
   const categories = useMemo(
     () => ["All", ...new Set(products.map((p) => p.category || "Uncategorised"))],
@@ -258,7 +296,6 @@ export default function OutletDashboard() {
   return (
     <main className="outlet-page">
       <header className="outlet-header">
-
         <nav className="header-actions">
           <CustomerManager />
 
@@ -280,7 +317,7 @@ export default function OutletDashboard() {
       <section className="inventory-section">
         <div className="silver-rate-card">
           <div className="silver-rate-main">
-            <span className="silver-rate-label">TODAY'S SILVER RATE</span>
+            <span className="silver-rate-label">TODAY&apos;S SILVER RATE</span>
 
             <div className="silver-rate-value">
               {loadingSilverRate ? (
@@ -309,7 +346,8 @@ export default function OutletDashboard() {
 
             {silverRate?.updatedAt && (
               <small>
-                Updated {new Date(silverRate.updatedAt).toLocaleTimeString("en-IN", {
+                Updated{" "}
+                {new Date(silverRate.updatedAt).toLocaleTimeString("en-IN", {
                   hour: "2-digit",
                   minute: "2-digit",
                 })}
@@ -317,6 +355,7 @@ export default function OutletDashboard() {
             )}
           </div>
         </div>
+
         <div className="inventory-heading">
           <div>
             <p className="eyebrow">OUTLET INVENTORY</p>
@@ -357,7 +396,9 @@ export default function OutletDashboard() {
               onChange={(event) => setCategory(event.target.value)}
             >
               {categories.map((item) => (
-                <option key={item} value={item}>{item}</option>
+                <option key={item} value={item}>
+                  {item}
+                </option>
               ))}
             </select>
           </label>
@@ -377,14 +418,20 @@ export default function OutletDashboard() {
           </label>
         </div>
 
-        {error && <div className="outlet-error" role="alert">{error}</div>}
+        {error && (
+          <div className="outlet-error" role="alert">
+            {error}
+          </div>
+        )}
 
         {loadingProducts ? (
           <div className="inventory-message">Loading available jewellery…</div>
         ) : filteredProducts.length === 0 ? (
           <div className="inventory-message">
             <strong>
-              {error ? "Inventory could not be loaded" : "No matching pieces found"}
+              {error
+                ? "Inventory could not be loaded"
+                : "No matching pieces found"}
             </strong>
             <p>
               {error
@@ -399,7 +446,11 @@ export default function OutletDashboard() {
                 <div className="row-photo">
                   {product.image ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={product.image} alt={product.name} loading="lazy" />
+                    <img
+                      src={product.image}
+                      alt={product.name}
+                      loading="lazy"
+                    />
                   ) : (
                     <div className="row-photo-placeholder">925</div>
                   )}
@@ -429,23 +480,16 @@ export default function OutletDashboard() {
                 <div className="row-actions">
                   <button
                     type="button"
-                    className="rates-button "
+                    className="rates-button"
                     onClick={() => {
-  setShowPriceBreakup(false);
-  setSelectedProduct(product);
-}}
+                      setShowPriceBreakup(false);
+                      setExpandedOffers({});
+                      setSelectedProduct(product);
+                    }}
                   >
                     Check Rates
                     <span>&amp; Discounts</span>
                   </button>
-
-                  {/* <a
-                    className="product-select"
-                    href={`/sale?sku=${encodeURIComponent(product.sku || "")}&pieceId=${encodeURIComponent(product.pieceId || "")}`}
-                  >
-                    Select
-                    <span>→</span>
-                  </a> */}
                 </div>
               </article>
             ))}
@@ -459,7 +503,7 @@ export default function OutletDashboard() {
           role="presentation"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) {
-              setSelectedProduct(null);
+              closeRatesModal();
             }
           }}
         >
@@ -471,110 +515,93 @@ export default function OutletDashboard() {
           >
             <header className="rates-modal-header">
               <div>
-                <p className="eyebrow">PRICE & OFFERS</p>
-                <h2 id="rates-modal-title">Rates & Discounts</h2>
+                <p className="eyebrow">PRICE &amp; OFFERS</p>
+                <h2 id="rates-modal-title">Rates &amp; Discounts</h2>
                 <p>{selectedProduct.name}</p>
                 <small>
-                  SKU: {selectedProduct.sku || "—"} · Batch: {selectedProduct.batchId || "—"}
+                  SKU: {selectedProduct.sku || "—"} · Batch:{" "}
+                  {selectedProduct.batchId || "—"}
                 </small>
               </div>
 
               <button
                 className="modal-close"
                 type="button"
-                onClick={() => {
-  setShowPriceBreakup(false);
-  setSelectedProduct(null);
-}}
+                onClick={closeRatesModal}
                 aria-label="Close rates popup"
               >
                 ×
               </button>
             </header>
 
-          <div className="modal-standard-price">
-  <span>Standard selling price</span>
+            <div className="modal-standard-price">
+              <span>Standard selling price</span>
 
-  <strong>{money(selectedProduct.sp)}</strong>
+              <strong>{money(selectedProduct.sp)}</strong>
 
-  <small>Weight: {selectedProduct.weight} g</small>
+              <small>Weight: {selectedProduct.weight} g</small>
 
-  {silverRate && (
-    <div className="price-breakup-wrapper">
-      <button
-        type="button"
-        className="price-breakup-toggle"
-        onClick={() => setShowPriceBreakup((prev) => !prev)}
-      >
-        <span>
-          {showPriceBreakup
-            ? "Hide full breakdown"
-            : "View full breakdown"}
-        </span>
+              {silverRate && (
+                <div className="price-breakup-wrapper">
+                  <button
+                    type="button"
+                    className="price-breakup-toggle"
+                    onClick={() => setShowPriceBreakup((prev) => !prev)}
+                  >
+                    <span>
+                      {showPriceBreakup
+                        ? "Hide full breakdown"
+                        : "View full breakdown"}
+                    </span>
 
-        <span
-          className={`price-breakup-arrow ${
-            showPriceBreakup ? "open" : ""
-          }`}
-        >
-          ↓
-        </span>
-      </button>
+                    <span
+                      className={`price-breakup-arrow ${
+                        showPriceBreakup ? "open" : ""
+                      }`}
+                    >
+                      ↓
+                    </span>
+                  </button>
 
-      {showPriceBreakup && (
-        <div className="price-breakup">
-          {(() => {
-            const sellingPrice = Number(selectedProduct.sp);
-            const weight = Number(selectedProduct.weight);
+                  {showPriceBreakup && (
+                    <div className="price-breakup">
+                      {(() => {
+                        const { silverValue, craftsmanship, plating, gst } =
+                          calculatePriceBreakdown({
+                            price: selectedProduct.sp,
+                            weight: selectedProduct.weight,
+                            silverRateInclusive: silverRate.inclusive,
+                          });
 
-            const silverRateExcludingGST =
-              Number(silverRate.inclusive) / 1.03;
+                        return (
+                          <div className="price-breakup-table">
+                            <div className="price-breakup-item">
+                              <span>Silver Value</span>
+                              <strong>{money(silverValue)}</strong>
+                            </div>
 
-            const gst = sellingPrice * 0.03;
+                            <div className="price-breakup-item">
+                              <span>Craftsmanship</span>
+                              <strong>{money(craftsmanship)}</strong>
+                            </div>
 
-            const calculatedSilverValue =
-              weight * silverRateExcludingGST;
+                            <div className="price-breakup-item">
+                              <span>Rhodium Plating</span>
+                              <strong>{money(plating)}</strong>
+                            </div>
 
-            const craftsmanshipAndPlating = Math.max(
-              0,
-              Math.floor(
-                sellingPrice -
-                  calculatedSilverValue -
-                  gst
-              )
-            );
-
-            const silverValue =
-              sellingPrice -
-              craftsmanshipAndPlating -
-              gst;
-
-            return (
-              <div className="price-breakup-table">
-                <div className="price-breakup-item">
-                  <span>Silver Value</span>
-                  <strong>{money(silverValue)}</strong>
+                            <div className="price-breakup-item">
+                              <span>GST (3%)</span>
+                              <strong>{money(gst)}</strong>
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
                 </div>
-
-                <div className="price-breakup-item">
-                  <span>Craftsmanship &amp; Plating</span>
-                  <strong>
-                    {money(craftsmanshipAndPlating)}
-                  </strong>
-                </div>
-
-                <div className="price-breakup-item">
-                  <span>GST</span>
-                  <strong>{money(gst)}</strong>
-                </div>
-              </div>
-            );
-          })()}
-        </div>
-      )}
-    </div>
-  )}
-</div>
+              )}
+            </div>
 
             <div className="rates-modal-body">
               <h3>Available offers</h3>
@@ -585,51 +612,121 @@ export default function OutletDashboard() {
                   <p>The standard selling price applies to this piece.</p>
                 </div>
               ) : (
-                selectedOffers.map((offer) => (
-                  <article className="offer-card" key={offer.id}>
-                    <div className="offer-card-heading">
-                      <div>
-                        <strong>{offer.name}</strong>
+                selectedOffers.map((offer) => {
+                  const isOfferExpanded = !!expandedOffers[offer.id];
 
-                        <span>
-                          {offer.type === "percentage"
-                            ? `${offer.value}% off`
-                            : `${money(offer.value)} off`}
-                        </span>
+                  return (
+                    <article className="offer-card" key={offer.id}>
+                      <div className="offer-card-heading">
+                        <div>
+                          <strong>{offer.name}</strong>
 
-                        {offer.description && (
-                          <p className="offer-description">
-                            {offer.description}
-                          </p>
-                        )}
+                          <span>
+                            {offer.type === "percentage"
+                              ? `${offer.value}% off`
+                              : `${money(offer.value)} off`}
+                          </span>
+
+                          {offer.description && (
+                            <p className="offer-description">
+                              {offer.description}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="offer-card-price">
+                          <strong>{money(offer.price)}</strong>
+                          <small>Indicative price</small>
+                        </div>
                       </div>
 
-                      <div className="offer-card-price">
-                        <strong>{money(offer.price)}</strong>
-                        <small>Indicative price</small>
+                      {silverRate && (
+                        <div className="price-breakup-wrapper">
+                          <button
+                            type="button"
+                            className="price-breakup-toggle"
+                            onClick={() => toggleOfferBreakdown(offer.id)}
+                          >
+                            <span>
+                              {isOfferExpanded
+                                ? "Hide full breakdown"
+                                : "View full breakdown"}
+                            </span>
+
+                            <span
+                              className={`price-breakup-arrow ${
+                                isOfferExpanded ? "open" : ""
+                              }`}
+                            >
+                              ↓
+                            </span>
+                          </button>
+
+                          {isOfferExpanded && (
+                            <div className="price-breakup">
+                              {(() => {
+                                const {
+                                  silverValue,
+                                  craftsmanship,
+                                  plating,
+                                  gst,
+                                } = calculatePriceBreakdown({
+                                  price: offer.price,
+                                  weight: selectedProduct.weight,
+                                  silverRateInclusive: silverRate.inclusive,
+                                });
+
+                                return (
+                                  <div className="price-breakup-table">
+                                    <div className="price-breakup-item">
+                                      <span>Silver Value</span>
+                                      <strong>{money(silverValue)}</strong>
+                                    </div>
+
+                                    <div className="price-breakup-item">
+                                      <span>Craftsmanship</span>
+                                      <strong>{money(craftsmanship)}</strong>
+                                    </div>
+
+                                    <div className="price-breakup-item">
+                                      <span>Rhodium Plating</span>
+                                      <strong>{money(plating)}</strong>
+                                    </div>
+
+                                    <div className="price-breakup-item">
+                                      <span>GST (3%)</span>
+                                      <strong>{money(gst)}</strong>
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      <div className="offer-savings">
+                        Potential saving: {money(offer.amountOff)}
                       </div>
-                    </div>
 
-                    <div className="offer-savings">
-                      Potential saving: {money(offer.amountOff)}
-                    </div>
+                      <div className="offer-criteria">
+                        <strong>Offer criteria</strong>
+                        <ul>
+                          {(offer.criteria || []).map((criterion, index) => (
+                            <li key={`${offer.id}-${index}`}>{criterion}</li>
+                          ))}
+                        </ul>
+                      </div>
 
-                    <div className="offer-criteria">
-                      <strong>Offer criteria</strong>
-                      <ul>
-                        {(offer.criteria || []).map((criterion, index) => (
-                          <li key={`${offer.id}-${index}`}>{criterion}</li>
-                        ))}
-                      </ul>
-                    </div>
-
-                    {offer.requiresBillCheck && (
-                      <p className="offer-condition-note">
-                        Final eligibility depends on the complete bill and the offer criteria.
-                      </p>
-                    )}
-                  </article>
-                ))
+                      {offer.requiresBillCheck && (
+                        <p className="offer-condition-note">
+                          Final eligibility depends on the complete bill and the
+                          offer criteria.
+                        </p>
+                      )}
+                    </article>
+                  );
+                })
               )}
             </div>
 
@@ -637,14 +734,14 @@ export default function OutletDashboard() {
               <button
                 type="button"
                 className="modal-back-button"
-                onClick={() => setSelectedProduct(null)}
+                onClick={closeRatesModal}
               >
                 ← Back to inventory
               </button>
               <button
                 type="button"
                 className="modal-done-button"
-                onClick={() => setSelectedProduct(null)}
+                onClick={closeRatesModal}
               >
                 Close
               </button>
