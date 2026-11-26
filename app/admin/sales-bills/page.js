@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -29,6 +28,20 @@ function displayDate(value) {
     timeStyle: "short",
     timeZone: "Asia/Kolkata",
   });
+}
+
+function getSaleProfit(sale) {
+  if (sale.profitAtSale != null) {
+    return Number(sale.profitAtSale) || 0;
+  }
+  if (sale.totalCostAtSale != null) {
+    return (
+      Number(sale.netAmount || 0) -
+      Number(sale.totalCostAtSale || 0) -
+      Number(sale.returnedProfitReversed || 0)
+    );
+  }
+  return 0;
 }
 
 export default function SalesBillsPage() {
@@ -140,6 +153,14 @@ export default function SalesBillsPage() {
         return Number(a.netAmount || 0) - Number(b.netAmount || 0);
       }
 
+      if (sortBy === "profitHigh") {
+        return getSaleProfit(b) - getSaleProfit(a);
+      }
+
+      if (sortBy === "profitLow") {
+        return getSaleProfit(a) - getSaleProfit(b);
+      }
+
       return new Date(b.createdAt) - new Date(a.createdAt);
     });
 
@@ -159,6 +180,17 @@ export default function SalesBillsPage() {
     (sum, sale) => sum + Number(sale.netAmount || 0),
     0
   );
+
+  const totalProfit = filteredSales.reduce(
+    (sum, sale) =>
+      (sale.status || "completed") === "cancelled"
+        ? sum
+        : sum + getSaleProfit(sale),
+    0
+  );
+
+  const overallMarginPct =
+    totalAmount > 0 ? (totalProfit / totalAmount) * 100 : 0;
 
   async function deleteBill(sale) {
     const billNumber = sale.billNumber || sale._id;
@@ -248,6 +280,13 @@ export default function SalesBillsPage() {
           <span>Total Bill Amount</span>
           <strong>{money(totalAmount)}</strong>
           <small>Sum of filtered invoice totals</small>
+        </div>
+        <div>
+          <span>Total Profit</span>
+          <strong style={{ color: totalProfit >= 0 ? "#15803d" : "#b91c1c" }}>
+            {money(totalProfit)}
+          </strong>
+          <small>{overallMarginPct.toFixed(1)}% overall margin</small>
         </div>
       </section>
 
@@ -348,6 +387,8 @@ export default function SalesBillsPage() {
               <option value="oldest">Oldest first</option>
               <option value="amountHigh">Highest amount</option>
               <option value="amountLow">Lowest amount</option>
+              <option value="profitHigh">Highest profit</option>
+              <option value="profitLow">Lowest profit</option>
             </select>
           </label>
         </div>
@@ -376,6 +417,7 @@ export default function SalesBillsPage() {
                   <th>Items</th>
                   <th>Salesperson</th>
                   <th>Bill Amount</th>
+                  <th>Profit</th>
                   <th>Paid / Balance</th>
                   <th>Status</th>
                   <th>Actions</th>
@@ -387,6 +429,9 @@ export default function SalesBillsPage() {
                     sale.customerSnapshot?.name || "Walk-in Customer";
                   const items = sale.items || [];
                   const status = sale.status || "completed";
+                  const net = Number(sale.netAmount || 0);
+                  const profit = getSaleProfit(sale);
+                  const marginPct = net > 0 ? (profit / net) * 100 : 0;
 
                   return (
                     <tr key={sale._id}>
@@ -413,12 +458,22 @@ export default function SalesBillsPage() {
                       </td>
                       <td>{sale.salespersonName || "—"}</td>
                       <td>
-                        <strong>{money(sale.netAmount)}</strong>
+                        <strong>{money(net)}</strong>
                         {Number(sale.discountAmount || 0) > 0 && (
                           <small>
                             Discount: {money(sale.discountAmount)}
                           </small>
                         )}
+                      </td>
+                      <td>
+                        <strong
+                          style={{
+                            color: profit >= 0 ? "#15803d" : "#b91c1c",
+                          }}
+                        >
+                          {money(profit)}
+                        </strong>
+                        <small>{marginPct.toFixed(1)}% margin</small>
                       </td>
                       <td>
                         <strong>{money(sale.amountPaid)}</strong>
