@@ -44,6 +44,14 @@ function getSaleProfit(sale) {
   return 0;
 }
 
+function getSaleWeight(sale) {
+  if (!Array.isArray(sale.items)) return 0;
+  return sale.items.reduce(
+    (sum, item) => (item.isReplaced ? sum : sum + (Number(item.weight) || 0)),
+    0
+  );
+}
+
 export default function SalesBillsPage() {
   const [sales, setSales] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -161,6 +169,14 @@ export default function SalesBillsPage() {
         return getSaleProfit(a) - getSaleProfit(b);
       }
 
+      if (sortBy === "weightHigh") {
+        return getSaleWeight(b) - getSaleWeight(a);
+      }
+
+      if (sortBy === "weightLow") {
+        return getSaleWeight(a) - getSaleWeight(b);
+      }
+
       return new Date(b.createdAt) - new Date(a.createdAt);
     });
 
@@ -176,16 +192,35 @@ export default function SalesBillsPage() {
     sortBy,
   ]);
 
-  const totalAmount = filteredSales.reduce(
+  const activeFilteredSales = useMemo(
+    () =>
+      filteredSales.filter(
+        (sale) => (sale.status || "completed") !== "cancelled"
+      ),
+    [filteredSales]
+  );
+
+  const totalAmount = activeFilteredSales.reduce(
     (sum, sale) => sum + Number(sale.netAmount || 0),
     0
   );
 
-  const totalProfit = filteredSales.reduce(
+  const totalProfit = activeFilteredSales.reduce(
+    (sum, sale) => sum + getSaleProfit(sale),
+    0
+  );
+
+  const totalSilverWeight = activeFilteredSales.reduce(
+    (sum, sale) => sum + getSaleWeight(sale),
+    0
+  );
+
+  const totalPiecesSold = activeFilteredSales.reduce(
     (sum, sale) =>
-      (sale.status || "completed") === "cancelled"
-        ? sum
-        : sum + getSaleProfit(sale),
+      sum +
+      (Array.isArray(sale.items)
+        ? sale.items.filter((it) => !it.isReplaced).length
+        : 0),
     0
   );
 
@@ -274,7 +309,22 @@ export default function SalesBillsPage() {
         <div>
           <span>Filtered Bills</span>
           <strong>{filteredSales.length.toLocaleString("en-IN")}</strong>
-          <small>Matching invoices</small>
+          <small>{totalPiecesSold.toLocaleString("en-IN")} pieces sold</small>
+        </div>
+        <div>
+          <span>Total Silver Sold</span>
+          <strong>
+            {totalSilverWeight.toLocaleString("en-IN", {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 3,
+            })}{" "}
+            g
+          </strong>
+          <small>
+            {totalSilverWeight >= 1000
+              ? `${(totalSilverWeight / 1000).toFixed(3)} kg net silver`
+              : "Net weight of sold items"}
+          </small>
         </div>
         <div>
           <span>Total Bill Amount</span>
@@ -389,6 +439,8 @@ export default function SalesBillsPage() {
               <option value="amountLow">Lowest amount</option>
               <option value="profitHigh">Highest profit</option>
               <option value="profitLow">Lowest profit</option>
+              <option value="weightHigh">Highest weight</option>
+              <option value="weightLow">Lowest weight</option>
             </select>
           </label>
         </div>
@@ -414,7 +466,7 @@ export default function SalesBillsPage() {
                 <tr>
                   <th>Bill / Date</th>
                   <th>Customer</th>
-                  <th>Items</th>
+                  <th>Items &amp; Weight</th>
                   <th>Salesperson</th>
                   <th>Bill Amount</th>
                   <th>Profit</th>
@@ -432,6 +484,7 @@ export default function SalesBillsPage() {
                   const net = Number(sale.netAmount || 0);
                   const profit = getSaleProfit(sale);
                   const marginPct = net > 0 ? (profit / net) * 100 : 0;
+                  const billWeight = getSaleWeight(sale);
 
                   return (
                     <tr key={sale._id}>
@@ -446,7 +499,9 @@ export default function SalesBillsPage() {
                         </small>
                       </td>
                       <td>
-                        <strong>{items.length} item(s)</strong>
+                        <strong>
+                          {items.length} item(s) • {billWeight.toFixed(3)} g
+                        </strong>
                         <small>
                           {items
                             .slice(0, 2)
